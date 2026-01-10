@@ -86,20 +86,30 @@ export function useStartTunnel() {
 
   return useMutation({
     mutationFn: async (id: string) => {
-      if (isDemoMode) {
-        // In demo mode, just update locally
-        const tunnel = tunnels.find(t => t.id === id)
-        if (!tunnel) throw new Error('Tunnel not found')
-        return {
-          ...tunnel,
-          status: 'active' as const,
-          updatedAt: new Date().toISOString(),
-          lastConnected: new Date().toISOString(),
-        }
-      }
-      return apiClient.startTunnel(id)
+      console.log('🚀 Starting tunnel:', id)
+
+      // Add minimum delay for smooth animation
+      const [result] = await Promise.all([
+        (async () => {
+          if (isDemoMode) {
+            const tunnel = tunnels.find(t => t.id === id)
+            if (!tunnel) throw new Error('Tunnel not found')
+            return {
+              ...tunnel,
+              status: 'active' as const,
+              updatedAt: new Date().toISOString(),
+              lastConnected: new Date().toISOString(),
+            }
+          }
+          return apiClient.startTunnel(id)
+        })(),
+        new Promise(resolve => setTimeout(resolve, 800)) // Minimum 800ms for animation
+      ])
+
+      return result
     },
     onSuccess: (data) => {
+      console.log('✅ Tunnel started:', data.id)
       if (!isDemoMode) {
         queryClient.invalidateQueries({ queryKey: tunnelKeys.detail(data.id) })
       }
@@ -116,19 +126,29 @@ export function useStopTunnel() {
 
   return useMutation({
     mutationFn: async (id: string) => {
-      if (isDemoMode) {
-        // In demo mode, just update locally
-        const tunnel = tunnels.find(t => t.id === id)
-        if (!tunnel) throw new Error('Tunnel not found')
-        return {
-          ...tunnel,
-          status: 'stopped' as const,
-          updatedAt: new Date().toISOString(),
-        }
-      }
-      return apiClient.stopTunnel(id)
+      console.log('🛑 Stopping tunnel:', id)
+
+      // Add minimum delay for smooth animation
+      const [result] = await Promise.all([
+        (async () => {
+          if (isDemoMode) {
+            const tunnel = tunnels.find(t => t.id === id)
+            if (!tunnel) throw new Error('Tunnel not found')
+            return {
+              ...tunnel,
+              status: 'stopped' as const,
+              updatedAt: new Date().toISOString(),
+            }
+          }
+          return apiClient.stopTunnel(id)
+        })(),
+        new Promise(resolve => setTimeout(resolve, 800)) // Minimum 800ms for animation
+      ])
+
+      return result
     },
     onSuccess: (data) => {
+      console.log('⏹️ Tunnel stopped:', data.id)
       if (!isDemoMode) {
         queryClient.invalidateQueries({ queryKey: tunnelKeys.detail(data.id) })
       }

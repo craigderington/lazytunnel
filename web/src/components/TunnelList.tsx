@@ -14,8 +14,10 @@ import {
   CheckCircle2,
   Loader2,
   ArrowRight,
+  ExternalLink,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useState } from 'react'
 
 export function TunnelList() {
   const { isLoading, error } = useTunnels()
@@ -24,6 +26,10 @@ export function TunnelList() {
   const startTunnel = useStartTunnel()
   const stopTunnel = useStopTunnel()
   const deleteTunnel = useDeleteTunnel()
+
+  const [startingTunnelId, setStartingTunnelId] = useState<string | null>(null)
+  const [stoppingTunnelId, setStoppingTunnelId] = useState<string | null>(null)
+  const [deletingTunnelId, setDeletingTunnelId] = useState<string | null>(null)
 
   console.log('🔍 TunnelList Debug:', {
     tunnels: tunnels.length,
@@ -96,12 +102,39 @@ export function TunnelList() {
           <TunnelCard
             key={tunnel.id}
             tunnel={tunnel}
-            onStart={() => startTunnel.mutate(tunnel.id)}
-            onStop={() => stopTunnel.mutate(tunnel.id)}
-            onDelete={() => deleteTunnel.mutate(tunnel.id)}
-            isStarting={startTunnel.isPending}
-            isStopping={stopTunnel.isPending}
-            isDeleting={deleteTunnel.isPending}
+            onStart={() => {
+              console.log('🎬 START clicked for:', tunnel.name, tunnel.id)
+              setStartingTunnelId(tunnel.id)
+              startTunnel.mutate(tunnel.id, {
+                onSettled: () => {
+                  console.log('🏁 START settled for:', tunnel.id)
+                  setStartingTunnelId(null)
+                }
+              })
+            }}
+            onStop={() => {
+              console.log('🎬 STOP clicked for:', tunnel.name, tunnel.id)
+              setStoppingTunnelId(tunnel.id)
+              stopTunnel.mutate(tunnel.id, {
+                onSettled: () => {
+                  console.log('🏁 STOP settled for:', tunnel.id)
+                  setStoppingTunnelId(null)
+                }
+              })
+            }}
+            onDelete={() => {
+              console.log('🎬 DELETE clicked for:', tunnel.name, tunnel.id)
+              setDeletingTunnelId(tunnel.id)
+              deleteTunnel.mutate(tunnel.id, {
+                onSettled: () => {
+                  console.log('🏁 DELETE settled for:', tunnel.id)
+                  setDeletingTunnelId(null)
+                }
+              })
+            }}
+            isStarting={startingTunnelId === tunnel.id}
+            isStopping={stoppingTunnelId === tunnel.id}
+            isDeleting={deletingTunnelId === tunnel.id}
           />
         ))}
       </div>
@@ -162,9 +195,27 @@ function TunnelCard({
             Connection Path
           </div>
           <div className="flex items-center gap-2 text-sm">
-            <code className="rounded bg-muted px-2 py-1">
-              localhost:{tunnel.localPort}
-            </code>
+            <a
+              href={`http://localhost:${tunnel.localPort}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={cn(
+                "rounded bg-muted px-2 py-1 inline-flex items-center gap-1 transition-colors",
+                tunnel.status === 'active'
+                  ? "hover:bg-primary hover:text-primary-foreground cursor-pointer"
+                  : "opacity-50 cursor-not-allowed pointer-events-none"
+              )}
+              onClick={(e) => {
+                if (tunnel.status !== 'active') {
+                  e.preventDefault()
+                }
+              }}
+            >
+              <code>localhost:{tunnel.localPort}</code>
+              {tunnel.status === 'active' && (
+                <ExternalLink className="h-3 w-3" />
+              )}
+            </a>
             <ArrowRight className="h-3 w-3 text-muted-foreground" />
             <code className="rounded bg-muted px-2 py-1 truncate">
               {tunnel.remoteHost}:{tunnel.remotePort}
@@ -210,9 +261,9 @@ function TunnelCard({
               ) : (
                 <Square className="mr-2 h-3 w-3" />
               )}
-              Stop
+              {isStopping ? "Stopping..." : "Stop"}
             </Button>
-          ) : tunnel.status === 'connecting' ? (
+          ) : tunnel.status === 'connecting' || isStarting ? (
             <Button
               size="sm"
               className="flex-1"
@@ -228,11 +279,7 @@ function TunnelCard({
               onClick={onStart}
               disabled={isStarting}
             >
-              {isStarting ? (
-                <Loader2 className="mr-2 h-3 w-3 animate-spin" />
-              ) : (
-                <Play className="mr-2 h-3 w-3" />
-              )}
+              <Play className="mr-2 h-3 w-3" />
               Start
             </Button>
           )}

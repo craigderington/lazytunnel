@@ -6,8 +6,7 @@ services:
       context: .
       dockerfile: deployments/docker/Dockerfile.server
     container_name: lazytunnel-server
-    ports:
-      - "8080:8080"
+    network_mode: host  # Use host network so tunnels bind to host ports
     environment:
       - ADDR=:8080
     volumes:
@@ -28,6 +27,8 @@ services:
     container_name: lazytunnel-web
     ports:
       - "3000:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Enable host.docker.internal on Linux
     depends_on:
       - server
     restart: unless-stopped
