@@ -1,0 +1,45 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+docs/
+examples/
+
+# Build artifacts
+bin/
+dist/
+server
+agent
+tunnelctl
+*.db
+*.db-shm
+*.db-wal
+
+# Dependencies
+node_modules/
+vendor/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+*_test.go
+tests/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Temp files
+tmp/
+temp/
+*.log

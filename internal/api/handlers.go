@@ -216,12 +216,12 @@ func (s *Server) handleGetTunnelStatus(w http.ResponseWriter, r *http.Request) {
 	s.respondJSON(w, http.StatusOK, status)
 }
 
-// handleDeleteTunnel stops and deletes a tunnel
+// handleDeleteTunnel stops and deletes a tunnel (removes from manager)
 func (s *Server) handleDeleteTunnel(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	tunnelID := vars["id"]
 
-	err := s.manager.Stop(context.Background(), tunnelID)
+	err := s.manager.Delete(context.Background(), tunnelID)
 	if err != nil {
 		// Check if it's a "not found" error - that's a real error
 		if err.Error() == fmt.Sprintf("tunnel %s not found", tunnelID) {
@@ -239,37 +239,24 @@ func (s *Server) handleDeleteTunnel(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleStartTunnel starts a stopped tunnel (placeholder - tunnels auto-start on create)
+// handleStartTunnel starts a stopped tunnel
 func (s *Server) handleStartTunnel(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	tunnelID := vars["id"]
 
-	tunnel, err := s.manager.Get(tunnelID)
-	if err != nil {
-		s.respondError(w, http.StatusNotFound, "Tunnel not found")
+	if err := s.manager.Start(r.Context(), tunnelID); err != nil {
+		s.logger.Error().Err(err).Str("tunnel_id", tunnelID).Msg("Failed to start tunnel")
+		s.respondError(w, http.StatusInternalServerError, "Failed to start tunnel: "+err.Error())
 		return
 	}
 
-	s.logger.Info().Str("tunnel_id", tunnelID).Msg("Tunnel start requested")
+	s.logger.Info().Str("tunnel_id", tunnelID).Msg("Tunnel start initiated")
 
-	// Return the tunnel in active state (tunnels are already started on create)
-	status := tunnel.GetStatus()
-	var statusStr string
-	if status != nil {
-		switch status.State {
-		case types.TunnelStateActive:
-			statusStr = "active"
-		case types.TunnelStatePending:
-			statusStr = "connecting"
-		case types.TunnelStateFailed:
-			statusStr = "failed"
-		case types.TunnelStateStopped:
-			statusStr = "disconnected"
-		default:
-			statusStr = "disconnected"
-		}
-	} else {
-		statusStr = "active"
+	// Get updated tunnel state
+	tunnel, err := s.manager.Get(tunnelID)
+	if err != nil {
+		s.respondError(w, http.StatusNotFound, "Tunnel not found after start")
+		return
 	}
 
 	s.respondJSON(w, http.StatusOK, map[string]interface{}{
@@ -284,23 +271,16 @@ func (s *Server) handleStartTunnel(w http.ResponseWriter, r *http.Request) {
 		"autoReconnect": tunnel.Spec.AutoReconnect,
 		"keepAlive":     tunnel.Spec.KeepAlive.Seconds(),
 		"maxRetries":    tunnel.Spec.MaxRetries,
-		"status":        statusStr,
+		"status":        "connecting",
 		"createdAt":     tunnel.CreatedAt.Format(time.RFC3339),
 		"updatedAt":     tunnel.Spec.UpdatedAt.Format(time.RFC3339),
 	})
 }
 
-// handleStopTunnel stops a running tunnel
+// handleStopTunnel stops a running tunnel (keeps it in the manager)
 func (s *Server) handleStopTunnel(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	tunnelID := vars["id"]
-
-	// Get tunnel before stopping to return its details
-	tunnel, err := s.manager.Get(tunnelID)
-	if err != nil {
-		s.respondError(w, http.StatusNotFound, "Tunnel not found")
-		return
-	}
 
 	if err := s.manager.Stop(r.Context(), tunnelID); err != nil {
 		s.logger.Error().Err(err).Str("tunnel_id", tunnelID).Msg("Failed to stop tunnel")
@@ -310,6 +290,13 @@ func (s *Server) handleStopTunnel(w http.ResponseWriter, r *http.Request) {
 
 	s.logger.Info().Str("tunnel_id", tunnelID).Msg("Tunnel stopped")
 
+	// Get updated tunnel state
+	tunnel, err := s.manager.Get(tunnelID)
+	if err != nil {
+		s.respondError(w, http.StatusNotFound, "Tunnel not found after stop")
+		return
+	}
+
 	s.respondJSON(w, http.StatusOK, map[string]interface{}{
 		"id":            tunnel.Spec.ID,
 		"name":          tunnel.Spec.Name,
@@ -322,7 +309,7 @@ func (s *Server) handleStopTunnel(w http.ResponseWriter, r *http.Request) {
 		"autoReconnect": tunnel.Spec.AutoReconnect,
 		"keepAlive":     tunnel.Spec.KeepAlive.Seconds(),
 		"maxRetries":    tunnel.Spec.MaxRetries,
-		"status":        "disconnected",
+		"status":        "stopped",
 		"createdAt":     tunnel.CreatedAt.Format(time.RFC3339),
 		"updatedAt":     tunnel.Spec.UpdatedAt.Format(time.RFC3339),
 	})

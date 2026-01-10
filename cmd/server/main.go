@@ -12,12 +12,14 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/craigderington/lazytunnel/internal/api"
+	"github.com/craigderington/lazytunnel/internal/storage"
 )
 
 var (
 	version = "dev"
 	addr    = flag.String("addr", ":8080", "HTTP server address")
 	debug   = flag.Bool("debug", false, "Enable debug logging")
+	dbPath  = flag.String("db", "tunnels.db", "Path to SQLite database file")
 )
 
 func main() {
@@ -41,10 +43,20 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Initialize persistent storage
+	store, err := storage.NewSQLiteStore(*dbPath)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize storage")
+	}
+	defer store.Close()
+
+	log.Info().Str("db_path", *dbPath).Msg("Initialized SQLite storage")
+
 	// Create API server
 	server := api.NewServer(ctx, api.Config{
-		Addr:   *addr,
-		Logger: log.Logger,
+		Addr:    *addr,
+		Logger:  log.Logger,
+		Storage: store,
 	})
 
 	// Start server in goroutine

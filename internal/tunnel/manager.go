@@ -9,11 +9,22 @@ import (
 	"github.com/craigderington/lazytunnel/pkg/types"
 )
 
+// Storage defines the interface for tunnel persistence
+type Storage interface {
+	Save(ctx context.Context, spec *types.TunnelSpec) error
+	UpdateStatus(ctx context.Context, tunnelID, status string) error
+	Delete(ctx context.Context, tunnelID string) error
+	Get(ctx context.Context, tunnelID string) (*types.TunnelSpec, error)
+	List(ctx context.Context) ([]*types.TunnelSpec, error)
+	Close() error
+}
+
 // Manager handles the lifecycle of SSH tunnels
 type Manager struct {
 	tunnels map[string]*Tunnel
 	mu      sync.RWMutex
 	ctx     context.Context
+	storage Storage // Optional persistent storage
 }
 
 // NewManager creates a new tunnel manager
@@ -24,6 +35,47 @@ func NewManager(ctx context.Context) *Manager {
 	}
 }
 
+// SetStorage configures persistent storage for the manager
+func (m *Manager) SetStorage(storage Storage) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.storage = storage
+}
+
+// LoadFromStorage restores tunnels from persistent storage
+// Stopped tunnels remain stopped, active tunnels are not auto-started
+func (m *Manager) LoadFromStorage(ctx context.Context) error {
+	if m.storage == nil {
+		return fmt.Errorf("no storage configured")
+	}
+
+	specs, err := m.storage.List(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list tunnels from storage: %w", err)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, spec := range specs {
+		// Create tunnel in memory with stopped status
+		tunnel := &Tunnel{
+			Spec:      spec,
+			CreatedAt: spec.CreatedAt,
+			ctx:       ctx,
+			Status: &types.TunnelStatus{
+				TunnelID:  spec.ID,
+				State:     types.TunnelStateStopped,
+				LastError: "",
+			},
+		}
+
+		m.tunnels[spec.ID] = tunnel
+	}
+
+	return nil
+}
+
 // Create creates and starts a new tunnel asynchronously
 func (m *Manager) Create(ctx context.Context, spec *types.TunnelSpec) error {
 	m.mu.Lock()
@@ -31,6 +83,13 @@ func (m *Manager) Create(ctx context.Context, spec *types.TunnelSpec) error {
 
 	if _, exists := m.tunnels[spec.ID]; exists {
 		return fmt.Errorf("tunnel %s already exists", spec.ID)
+	}
+
+	// Save to persistent storage first
+	if m.storage != nil {
+		if err := m.storage.Save(ctx, spec); err != nil {
+			return fmt.Errorf("failed to save tunnel to storage: %w", err)
+		}
 	}
 
 	// Initialize tunnel with "connecting" status
@@ -155,8 +214,34 @@ func (m *Manager) initializeTunnel(ctx context.Context, tunnel *Tunnel) error {
 	return nil
 }
 
-// Stop stops a running tunnel
+// Stop stops a running tunnel but keeps it in the manager
 func (m *Manager) Stop(ctx context.Context, tunnelID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	tunnel, exists := m.tunnels[tunnelID]
+	if !exists {
+		return fmt.Errorf("tunnel %s not found", tunnelID)
+	}
+
+	// Stop the tunnel (closes SSH session and frees ports)
+	if err := tunnel.Stop(); err != nil {
+		return fmt.Errorf("failed to stop tunnel: %w", err)
+	}
+
+	// Update status in persistent storage
+	if m.storage != nil {
+		if err := m.storage.UpdateStatus(ctx, tunnelID, "stopped"); err != nil {
+			return fmt.Errorf("failed to update tunnel status in storage: %w", err)
+		}
+	}
+
+	// Tunnel remains in map with "stopped" status
+	return nil
+}
+
+// Delete stops and removes a tunnel from the manager
+func (m *Manager) Delete(ctx context.Context, tunnelID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -168,6 +253,13 @@ func (m *Manager) Stop(ctx context.Context, tunnelID string) error {
 	// Try to stop the tunnel (may fail if already failed/stopped)
 	stopErr := tunnel.Stop()
 
+	// Remove from persistent storage
+	if m.storage != nil {
+		if err := m.storage.Delete(ctx, tunnelID); err != nil {
+			return fmt.Errorf("failed to delete tunnel from storage: %w", err)
+		}
+	}
+
 	// Always remove from active tunnels, even if Stop() failed
 	// (failed tunnels need to be deletable)
 	delete(m.tunnels, tunnelID)
@@ -177,6 +269,31 @@ func (m *Manager) Stop(ctx context.Context, tunnelID string) error {
 	if stopErr != nil {
 		return fmt.Errorf("tunnel removed, but stop had errors: %w", stopErr)
 	}
+
+	return nil
+}
+
+// Start starts a stopped tunnel
+func (m *Manager) Start(ctx context.Context, tunnelID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	tunnel, exists := m.tunnels[tunnelID]
+	if !exists {
+		return fmt.Errorf("tunnel %s not found", tunnelID)
+	}
+
+	// Check current status
+	status := tunnel.GetStatus()
+	if status != nil && status.State == types.TunnelStateActive {
+		return fmt.Errorf("tunnel is already active")
+	}
+
+	// Update to connecting state
+	tunnel.updateStatus(types.TunnelStatePending, "")
+
+	// Restart the tunnel in background
+	go m.connectTunnel(tunnel)
 
 	return nil
 }
@@ -242,9 +359,8 @@ type Tunnel struct {
 	forwarder Forwarder
 
 	// Lifecycle
-	ctx    context.Context
-	mu     sync.RWMutex
-	stopOnce sync.Once
+	ctx context.Context
+	mu  sync.RWMutex
 }
 
 // connect establishes the SSH session
@@ -258,25 +374,44 @@ func (t *Tunnel) connect() error {
 	return fmt.Errorf("no session configured")
 }
 
-// Stop stops the tunnel
+// Stop stops the tunnel (idempotent - can be called multiple times)
 func (t *Tunnel) Stop() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Check if already stopped
+	if t.Status != nil && t.Status.State == types.TunnelStateStopped {
+		return nil // Already stopped, no-op
+	}
+
 	var err error
-	t.stopOnce.Do(func() {
-		// Stop forwarder
-		if t.forwarder != nil {
-			if stopErr := t.forwarder.Stop(); stopErr != nil {
-				err = stopErr
-			}
-		}
 
-		// Close session
-		if closeErr := t.cleanup(); closeErr != nil && err == nil {
-			err = closeErr
+	// Stop forwarder
+	if t.forwarder != nil {
+		if stopErr := t.forwarder.Stop(); stopErr != nil {
+			err = stopErr
 		}
+		t.forwarder = nil // Clear forwarder reference
+	}
 
-		// Update status
-		t.updateStatus(types.TunnelStateStopped, "")
-	})
+	// Close session
+	if closeErr := t.cleanup(); closeErr != nil && err == nil {
+		err = closeErr
+	}
+
+	// Clear session references so they can be recreated on restart
+	t.session = nil
+	t.multiSession = nil
+
+	// Update status
+	if t.Status == nil {
+		t.Status = &types.TunnelStatus{
+			TunnelID: t.Spec.ID,
+		}
+	}
+	t.Status.State = types.TunnelStateStopped
+	t.Status.LastError = ""
+
 	return err
 }
 

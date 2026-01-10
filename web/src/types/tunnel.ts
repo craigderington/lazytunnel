@@ -1,5 +1,5 @@
 export type TunnelType = 'local' | 'remote' | 'dynamic'
-export type TunnelStatus = 'active' | 'connecting' | 'disconnected' | 'failed'
+export type TunnelStatus = 'active' | 'connecting' | 'disconnected' | 'failed' | 'stopped'
 
 export interface Hop {
   host: string

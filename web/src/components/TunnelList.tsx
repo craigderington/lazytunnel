@@ -268,6 +268,12 @@ function getStatusConfig(status: TunnelStatus) {
         variant: 'warning' as const,
         icon: Clock,
       }
+    case 'stopped':
+      return {
+        label: 'Stopped',
+        variant: 'secondary' as const,
+        icon: Square,
+      }
     case 'disconnected':
       return {
         label: 'Disconnected',

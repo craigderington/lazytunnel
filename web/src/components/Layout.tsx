@@ -13,11 +13,15 @@ import { ThemeToggle } from './ThemeToggle'
 import { DemoModeToggle } from './DemoModeToggle'
 import { cn } from '@/lib/utils'
 
+export type PageType = 'tunnels' | 'monitoring' | 'metrics' | 'settings'
+
 interface LayoutProps {
   children: ReactNode
+  activePage?: PageType
+  onPageChange?: (page: PageType) => void
 }
 
-export function Layout({ children }: LayoutProps) {
+export function Layout({ children, activePage = 'tunnels', onPageChange }: LayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(true)
 
   return (
@@ -72,10 +76,30 @@ export function Layout({ children }: LayoutProps) {
 
           {/* Navigation */}
           <nav className="flex-1 space-y-1 p-4">
-            <NavItem icon={<Network />} label="Tunnels" active />
-            <NavItem icon={<Activity />} label="Monitoring" />
-            <NavItem icon={<Database />} label="Metrics" />
-            <NavItem icon={<Settings />} label="Settings" />
+            <NavItem
+              icon={<Network />}
+              label="Tunnels"
+              active={activePage === 'tunnels'}
+              onClick={() => onPageChange?.('tunnels')}
+            />
+            <NavItem
+              icon={<Activity />}
+              label="Monitoring"
+              active={activePage === 'monitoring'}
+              onClick={() => onPageChange?.('monitoring')}
+            />
+            <NavItem
+              icon={<Database />}
+              label="Metrics"
+              active={activePage === 'metrics'}
+              onClick={() => onPageChange?.('metrics')}
+            />
+            <NavItem
+              icon={<Settings />}
+              label="Settings"
+              active={activePage === 'settings'}
+              onClick={() => onPageChange?.('settings')}
+            />
           </nav>
 
           {/* Footer */}
@@ -133,18 +157,13 @@ interface NavItemProps {
   icon: ReactNode
   label: string
   active?: boolean
+  onClick?: () => void
 }
 
-function NavItem({ icon, label, active }: NavItemProps) {
-  const handleClick = () => {
-    if (!active) {
-      alert(`${label} - Coming soon! This feature is under development.`)
-    }
-  }
-
+function NavItem({ icon, label, active, onClick }: NavItemProps) {
   return (
     <button
-      onClick={handleClick}
+      onClick={onClick}
       className={cn(
         "flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
         active

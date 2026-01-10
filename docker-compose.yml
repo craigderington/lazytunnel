@@ -1,43 +1,37 @@
 version: '3.8'
 
 services:
-  postgres:
-    image: postgres:15-alpine
-    container_name: lazytunnel-postgres
-    environment:
-      POSTGRES_DB: tunnelmanager
-      POSTGRES_USER: tunnelmanager
-      POSTGRES_PASSWORD: development_password_change_in_production
+  server:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile.server
+    container_name: lazytunnel-server
     ports:
-      - "5432:5432"
+      - "8080:8080"
+    environment:
+      - ADDR=:8080
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - tunnel-data:/app/data  # Persistent SQLite database
+      - ${HOME}/.ssh:/root/.ssh:ro  # Mount SSH keys (read-only)
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tunnelmanager -d tunnelmanager"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
-  # Uncomment when server is implemented
-  # server:
-  #   build:
-  #     context: .
-  #     dockerfile: deployments/docker/Dockerfile.server
-  #   container_name: lazytunnel-server
-  #   ports:
-  #     - "8080:8080"
-  #     - "9090:9090"  # Metrics
-  #   environment:
-  #     DB_HOST: postgres
-  #     DB_PORT: 5432
-  #     DB_NAME: tunnelmanager
-  #     DB_USER: tunnelmanager
-  #     DB_PASSWORD: development_password_change_in_production
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #   volumes:
-  #     - ./config.yaml:/etc/lazytunnel/config.yaml:ro
+  web:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile.web
+    container_name: lazytunnel-web
+    ports:
+      - "3000:80"
+    depends_on:
+      - server
+    restart: unless-stopped
 
 volumes:
-  postgres-data:
+  tunnel-data:
+    driver: local

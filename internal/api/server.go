@@ -25,15 +25,30 @@ type Server struct {
 
 // Config holds server configuration
 type Config struct {
-	Addr   string
-	Logger zerolog.Logger
+	Addr    string
+	Logger  zerolog.Logger
+	Storage tunnel.Storage // Optional persistent storage
 }
 
 // NewServer creates a new API server
 func NewServer(ctx context.Context, config Config) *Server {
+	manager := tunnel.NewManager(ctx)
+
+	// Configure storage if provided
+	if config.Storage != nil {
+		manager.SetStorage(config.Storage)
+
+		// Load existing tunnels from storage
+		if err := manager.LoadFromStorage(ctx); err != nil {
+			config.Logger.Error().Err(err).Msg("Failed to load tunnels from storage")
+		} else {
+			config.Logger.Info().Msg("Loaded tunnels from persistent storage")
+		}
+	}
+
 	s := &Server{
 		addr:    config.Addr,
-		manager: tunnel.NewManager(ctx),
+		manager: manager,
 		router:  mux.NewRouter(),
 		logger:  config.Logger,
 		ctx:     ctx,

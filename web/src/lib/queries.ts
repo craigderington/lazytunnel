@@ -81,11 +81,28 @@ export function useDeleteTunnel() {
 export function useStartTunnel() {
   const queryClient = useQueryClient()
   const updateTunnel = useTunnelStore((state) => state.updateTunnel)
+  const isDemoMode = useTunnelStore((state) => state.isDemoMode)
+  const tunnels = useTunnelStore((state) => state.tunnels)
 
   return useMutation({
-    mutationFn: (id: string) => apiClient.startTunnel(id),
+    mutationFn: async (id: string) => {
+      if (isDemoMode) {
+        // In demo mode, just update locally
+        const tunnel = tunnels.find(t => t.id === id)
+        if (!tunnel) throw new Error('Tunnel not found')
+        return {
+          ...tunnel,
+          status: 'active' as const,
+          updatedAt: new Date().toISOString(),
+          lastConnected: new Date().toISOString(),
+        }
+      }
+      return apiClient.startTunnel(id)
+    },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: tunnelKeys.detail(data.id) })
+      if (!isDemoMode) {
+        queryClient.invalidateQueries({ queryKey: tunnelKeys.detail(data.id) })
+      }
       updateTunnel(data.id, data)
     },
   })
@@ -94,11 +111,27 @@ export function useStartTunnel() {
 export function useStopTunnel() {
   const queryClient = useQueryClient()
   const updateTunnel = useTunnelStore((state) => state.updateTunnel)
+  const isDemoMode = useTunnelStore((state) => state.isDemoMode)
+  const tunnels = useTunnelStore((state) => state.tunnels)
 
   return useMutation({
-    mutationFn: (id: string) => apiClient.stopTunnel(id),
+    mutationFn: async (id: string) => {
+      if (isDemoMode) {
+        // In demo mode, just update locally
+        const tunnel = tunnels.find(t => t.id === id)
+        if (!tunnel) throw new Error('Tunnel not found')
+        return {
+          ...tunnel,
+          status: 'stopped' as const,
+          updatedAt: new Date().toISOString(),
+        }
+      }
+      return apiClient.stopTunnel(id)
+    },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: tunnelKeys.detail(data.id) })
+      if (!isDemoMode) {
+        queryClient.invalidateQueries({ queryKey: tunnelKeys.detail(data.id) })
+      }
       updateTunnel(data.id, data)
     },
   })
