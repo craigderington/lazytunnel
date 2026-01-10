@@ -1,0 +1,74 @@
+# lazytunnel Configuration Example
+# Copy this file to config.yaml and adjust values for your environment
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  tls:
+    enabled: false  # Enable in production
+    cert_file: "/etc/certs/server.crt"
+    key_file: "/etc/certs/server.key"
+
+database:
+  host: "localhost"
+  port: 5432
+  database: "tunnelmanager"
+  user: "tunnelmanager"
+  password_env: "DB_PASSWORD"  # Read password from environment variable
+  max_connections: 20
+  ssl_mode: "disable"  # Use "require" in production
+
+kms:
+  # Key Management System configuration
+  provider: "vault"  # Options: "aws", "vault", "local" (dev only)
+
+  # For AWS KMS
+  # region: "us-east-1"
+  # key_id: "alias/tunnel-manager-key"
+
+  # For HashiCorp Vault
+  vault_addr: "http://localhost:8200"
+  vault_token_env: "VAULT_TOKEN"
+  mount_path: "secret"
+
+  # For local development only (INSECURE)
+  # local_key_dir: "/tmp/lazytunnel-keys"
+
+auth:
+  # Authentication provider
+  provider: "none"  # Options: "none", "oidc", "basic"
+
+  # For OIDC
+  # issuer: "https://auth.example.com"
+  # client_id: "tunnel-manager"
+  # client_secret_env: "OAUTH_CLIENT_SECRET"
+  # redirect_url: "http://localhost:8080/auth/callback"
+
+tunnel:
+  # Default tunnel settings
+  default_keep_alive: "30s"
+  default_max_retries: 3
+  default_timeout: "10s"
+  max_concurrent: 1000
+
+  # Auto-reconnect settings
+  reconnect_backoff_initial: "1s"
+  reconnect_backoff_max: "60s"
+  reconnect_backoff_multiplier: 2.0
+
+metrics:
+  enabled: true
+  port: 9090
+  path: "/metrics"
+
+logging:
+  level: "info"  # Options: "debug", "info", "warn", "error"
+  format: "json"  # Options: "json", "text"
+  output: "stdout"  # Options: "stdout", "file"
+  file_path: "/var/log/lazytunnel/server.log"
+
+audit:
+  enabled: true
+  database: true  # Store audit logs in database
+  file: false     # Also write to file
+  file_path: "/var/log/lazytunnel/audit.log"

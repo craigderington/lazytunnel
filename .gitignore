@@ -1,0 +1,59 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+*.test
+*.out
+
+# Go workspace file
+go.work
+
+# Build artifacts
+/server
+/agent
+/tunnelctl
+
+# Dependency directories
+vendor/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment files
+.env
+.env.local
+*.local
+
+# Configuration files with secrets
+config.local.yaml
+secrets.yaml
+
+# Test coverage
+*.coverprofile
+coverage.html
+coverage.out
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+tmp/
+temp/
+.air/
+
+# Docker volumes
+postgres-data/
