@@ -49,6 +49,7 @@ func (s *SQLiteStore) initSchema() error {
 		type TEXT NOT NULL,
 		hops TEXT NOT NULL, -- JSON array
 		local_port INTEGER NOT NULL,
+		local_bind_address TEXT DEFAULT '127.0.0.1',
 		remote_host TEXT NOT NULL,
 		remote_port INTEGER NOT NULL,
 		auto_reconnect BOOLEAN NOT NULL,
@@ -69,7 +70,41 @@ func (s *SQLiteStore) initSchema() error {
 		return fmt.Errorf("failed to create schema: %w", err)
 	}
 
+	// Add local_bind_address column if it doesn't exist (for backward compatibility)
+	if _, err := s.db.Exec(`
+		ALTER TABLE tunnels ADD COLUMN local_bind_address TEXT DEFAULT '127.0.0.1'
+	`); err != nil {
+		// Ignore "duplicate column name" error
+		if !isDuplicateColumnError(err) {
+			return fmt.Errorf("failed to add local_bind_address column: %w", err)
+		}
+	}
+
 	return nil
+}
+
+// isDuplicateColumnError checks if error is about duplicate column
+func isDuplicateColumnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return contains(errStr, "duplicate column") || contains(errStr, "already exists")
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) &&
+		(s[:len(substr)] == substr || s[len(s)-len(substr):] == substr ||
+			findSubstring(s, substr)))
+}
+
+func findSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
 
 // Save saves a tunnel spec to the database
@@ -81,9 +116,9 @@ func (s *SQLiteStore) Save(ctx context.Context, spec *types.TunnelSpec) error {
 
 	query := `
 		INSERT OR REPLACE INTO tunnels (
-			id, name, owner, type, hops, local_port, remote_host, remote_port,
+			id, name, owner, type, hops, local_port, local_bind_address, remote_host, remote_port,
 			auto_reconnect, keep_alive, max_retries, status, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err = s.db.ExecContext(ctx, query,
@@ -93,6 +128,7 @@ func (s *SQLiteStore) Save(ctx context.Context, spec *types.TunnelSpec) error {
 		spec.Type,
 		string(hopsJSON),
 		spec.LocalPort,
+		spec.LocalBindAddress,
 		spec.RemoteHost,
 		spec.RemotePort,
 		spec.AutoReconnect,
@@ -155,7 +191,7 @@ func (s *SQLiteStore) Delete(ctx context.Context, tunnelID string) error {
 // Get retrieves a tunnel spec by ID
 func (s *SQLiteStore) Get(ctx context.Context, tunnelID string) (*types.TunnelSpec, error) {
 	query := `
-		SELECT id, name, owner, type, hops, local_port, remote_host, remote_port,
+		SELECT id, name, owner, type, hops, local_port, local_bind_address, remote_host, remote_port,
 		       auto_reconnect, keep_alive, max_retries, status, created_at, updated_at
 		FROM tunnels
 		WHERE id = ?
@@ -173,6 +209,7 @@ func (s *SQLiteStore) Get(ctx context.Context, tunnelID string) (*types.TunnelSp
 		&spec.Type,
 		&hopsJSON,
 		&spec.LocalPort,
+		&spec.LocalBindAddress,
 		&spec.RemoteHost,
 		&spec.RemotePort,
 		&spec.AutoReconnect,
@@ -203,7 +240,7 @@ func (s *SQLiteStore) Get(ctx context.Context, tunnelID string) (*types.TunnelSp
 // List retrieves all tunnel specs
 func (s *SQLiteStore) List(ctx context.Context) ([]*types.TunnelSpec, error) {
 	query := `
-		SELECT id, name, owner, type, hops, local_port, remote_host, remote_port,
+		SELECT id, name, owner, type, hops, local_port, local_bind_address, remote_host, remote_port,
 		       auto_reconnect, keep_alive, max_retries, status, created_at, updated_at
 		FROM tunnels
 		ORDER BY created_at DESC
@@ -230,6 +267,7 @@ func (s *SQLiteStore) List(ctx context.Context) ([]*types.TunnelSpec, error) {
 			&spec.Type,
 			&hopsJSON,
 			&spec.LocalPort,
+			&spec.LocalBindAddress,
 			&spec.RemoteHost,
 			&spec.RemotePort,
 			&spec.AutoReconnect,

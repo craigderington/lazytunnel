@@ -1,10 +1,13 @@
 package api
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os/exec"
 	"time"
 
 	"github.com/google/uuid"
@@ -50,21 +53,22 @@ func (s *Server) handleListTunnels(w http.ResponseWriter, r *http.Request) {
 		}
 
 		response[i] = map[string]interface{}{
-			"id":            t.Spec.ID,
-			"name":          t.Spec.Name,
-			"owner":         t.Spec.Owner,
-			"type":          t.Spec.Type,
-			"hops":          t.Spec.Hops,
-			"localPort":     t.Spec.LocalPort,
-			"remoteHost":    t.Spec.RemoteHost,
-			"remotePort":    t.Spec.RemotePort,
-			"autoReconnect": t.Spec.AutoReconnect,
-			"keepAlive":     t.Spec.KeepAlive.Seconds(),
-			"maxRetries":    t.Spec.MaxRetries,
-			"status":        statusStr,
-			"createdAt":     t.CreatedAt.Format(time.RFC3339),
-			"updatedAt":     t.Spec.UpdatedAt.Format(time.RFC3339),
-			"errorMessage":  errorMsg,
+			"id":               t.Spec.ID,
+			"name":             t.Spec.Name,
+			"owner":            t.Spec.Owner,
+			"type":             t.Spec.Type,
+			"hops":             t.Spec.Hops,
+			"localPort":        t.Spec.LocalPort,
+			"localBindAddress": t.Spec.LocalBindAddress,
+			"remoteHost":       t.Spec.RemoteHost,
+			"remotePort":       t.Spec.RemotePort,
+			"autoReconnect":    t.Spec.AutoReconnect,
+			"keepAlive":        t.Spec.KeepAlive.Seconds(),
+			"maxRetries":       t.Spec.MaxRetries,
+			"status":           statusStr,
+			"createdAt":        t.CreatedAt.Format(time.RFC3339),
+			"updatedAt":        t.Spec.UpdatedAt.Format(time.RFC3339),
+			"errorMessage":     errorMsg,
 		}
 	}
 
@@ -74,15 +78,16 @@ func (s *Server) handleListTunnels(w http.ResponseWriter, r *http.Request) {
 // handleCreateTunnel creates a new tunnel
 func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name          string        `json:"name"`
-		Type          types.TunnelType `json:"type"`
-		Hops          []types.Hop   `json:"hops"`
-		LocalPort     int           `json:"localPort"`
-		RemoteHost    string        `json:"remoteHost"`
-		RemotePort    int           `json:"remotePort"`
-		AutoReconnect bool          `json:"autoReconnect"`
-		KeepAlive     int           `json:"keepAlive"` // seconds
-		MaxRetries    int           `json:"maxRetries"`
+		Name             string           `json:"name"`
+		Type             types.TunnelType `json:"type"`
+		Hops             []types.Hop      `json:"hops"`
+		LocalPort        int              `json:"localPort"`
+		LocalBindAddress string           `json:"localBindAddress"`
+		RemoteHost       string           `json:"remoteHost"`
+		RemotePort       int              `json:"remotePort"`
+		AutoReconnect    bool             `json:"autoReconnect"`
+		KeepAlive        int              `json:"keepAlive"` // seconds
+		MaxRetries       int              `json:"maxRetries"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -92,19 +97,20 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 
 	// Build spec
 	spec := types.TunnelSpec{
-		ID:            uuid.New().String(),
-		Name:          req.Name,
-		Owner:         "api-user", // TODO: Get from auth context
-		Type:          req.Type,
-		Hops:          req.Hops,
-		LocalPort:     req.LocalPort,
-		RemoteHost:    req.RemoteHost,
-		RemotePort:    req.RemotePort,
-		AutoReconnect: req.AutoReconnect,
-		KeepAlive:     time.Duration(req.KeepAlive) * time.Second,
-		MaxRetries:    req.MaxRetries,
-		CreatedAt:     time.Now(),
-		UpdatedAt:     time.Now(),
+		ID:               uuid.New().String(),
+		Name:             req.Name,
+		Owner:            "api-user", // TODO: Get from auth context
+		Type:             req.Type,
+		Hops:             req.Hops,
+		LocalPort:        req.LocalPort,
+		LocalBindAddress: req.LocalBindAddress,
+		RemoteHost:       req.RemoteHost,
+		RemotePort:       req.RemotePort,
+		AutoReconnect:    req.AutoReconnect,
+		KeepAlive:        time.Duration(req.KeepAlive) * time.Second,
+		MaxRetries:       req.MaxRetries,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
 	}
 
 	// Set defaults
@@ -132,20 +138,21 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 	// Return the created tunnel in the format the frontend expects
 	// Status will be "connecting" initially, then transition to "active" or "failed"
 	s.respondJSON(w, http.StatusCreated, map[string]interface{}{
-		"id":            spec.ID,
-		"name":          spec.Name,
-		"owner":         spec.Owner,
-		"type":          spec.Type,
-		"hops":          spec.Hops,
-		"localPort":     spec.LocalPort,
-		"remoteHost":    spec.RemoteHost,
-		"remotePort":    spec.RemotePort,
-		"autoReconnect": spec.AutoReconnect,
-		"keepAlive":     spec.KeepAlive.Seconds(),
-		"maxRetries":    spec.MaxRetries,
-		"status":        "connecting", // Connecting in background
-		"createdAt":     spec.CreatedAt.Format(time.RFC3339),
-		"updatedAt":     spec.UpdatedAt.Format(time.RFC3339),
+		"id":               spec.ID,
+		"name":             spec.Name,
+		"owner":            spec.Owner,
+		"type":             spec.Type,
+		"hops":             spec.Hops,
+		"localPort":        spec.LocalPort,
+		"localBindAddress": spec.LocalBindAddress,
+		"remoteHost":       spec.RemoteHost,
+		"remotePort":       spec.RemotePort,
+		"autoReconnect":    spec.AutoReconnect,
+		"keepAlive":        spec.KeepAlive.Seconds(),
+		"maxRetries":       spec.MaxRetries,
+		"status":           "connecting", // Connecting in background
+		"createdAt":        spec.CreatedAt.Format(time.RFC3339),
+		"updatedAt":        spec.UpdatedAt.Format(time.RFC3339),
 	})
 }
 
@@ -183,21 +190,22 @@ func (s *Server) handleGetTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.respondJSON(w, http.StatusOK, map[string]interface{}{
-		"id":            tunnel.Spec.ID,
-		"name":          tunnel.Spec.Name,
-		"owner":         tunnel.Spec.Owner,
-		"type":          tunnel.Spec.Type,
-		"hops":          tunnel.Spec.Hops,
-		"localPort":     tunnel.Spec.LocalPort,
-		"remoteHost":    tunnel.Spec.RemoteHost,
-		"remotePort":    tunnel.Spec.RemotePort,
-		"autoReconnect": tunnel.Spec.AutoReconnect,
-		"keepAlive":     tunnel.Spec.KeepAlive.Seconds(),
-		"maxRetries":    tunnel.Spec.MaxRetries,
-		"status":        statusStr,
-		"createdAt":     tunnel.CreatedAt.Format(time.RFC3339),
-		"updatedAt":     tunnel.Spec.UpdatedAt.Format(time.RFC3339),
-		"errorMessage":  errorMsg,
+		"id":               tunnel.Spec.ID,
+		"name":             tunnel.Spec.Name,
+		"owner":            tunnel.Spec.Owner,
+		"type":             tunnel.Spec.Type,
+		"hops":             tunnel.Spec.Hops,
+		"localPort":        tunnel.Spec.LocalPort,
+		"localBindAddress": tunnel.Spec.LocalBindAddress,
+		"remoteHost":       tunnel.Spec.RemoteHost,
+		"remotePort":       tunnel.Spec.RemotePort,
+		"autoReconnect":    tunnel.Spec.AutoReconnect,
+		"keepAlive":        tunnel.Spec.KeepAlive.Seconds(),
+		"maxRetries":       tunnel.Spec.MaxRetries,
+		"status":           statusStr,
+		"createdAt":        tunnel.CreatedAt.Format(time.RFC3339),
+		"updatedAt":        tunnel.Spec.UpdatedAt.Format(time.RFC3339),
+		"errorMessage":     errorMsg,
 	})
 }
 
@@ -260,20 +268,21 @@ func (s *Server) handleStartTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.respondJSON(w, http.StatusOK, map[string]interface{}{
-		"id":            tunnel.Spec.ID,
-		"name":          tunnel.Spec.Name,
-		"owner":         tunnel.Spec.Owner,
-		"type":          tunnel.Spec.Type,
-		"hops":          tunnel.Spec.Hops,
-		"localPort":     tunnel.Spec.LocalPort,
-		"remoteHost":    tunnel.Spec.RemoteHost,
-		"remotePort":    tunnel.Spec.RemotePort,
-		"autoReconnect": tunnel.Spec.AutoReconnect,
-		"keepAlive":     tunnel.Spec.KeepAlive.Seconds(),
-		"maxRetries":    tunnel.Spec.MaxRetries,
-		"status":        "connecting",
-		"createdAt":     tunnel.CreatedAt.Format(time.RFC3339),
-		"updatedAt":     tunnel.Spec.UpdatedAt.Format(time.RFC3339),
+		"id":               tunnel.Spec.ID,
+		"name":             tunnel.Spec.Name,
+		"owner":            tunnel.Spec.Owner,
+		"type":             tunnel.Spec.Type,
+		"hops":             tunnel.Spec.Hops,
+		"localPort":        tunnel.Spec.LocalPort,
+		"localBindAddress": tunnel.Spec.LocalBindAddress,
+		"remoteHost":       tunnel.Spec.RemoteHost,
+		"remotePort":       tunnel.Spec.RemotePort,
+		"autoReconnect":    tunnel.Spec.AutoReconnect,
+		"keepAlive":        tunnel.Spec.KeepAlive.Seconds(),
+		"maxRetries":       tunnel.Spec.MaxRetries,
+		"status":           "connecting",
+		"createdAt":        tunnel.CreatedAt.Format(time.RFC3339),
+		"updatedAt":        tunnel.Spec.UpdatedAt.Format(time.RFC3339),
 	})
 }
 
@@ -298,20 +307,21 @@ func (s *Server) handleStopTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.respondJSON(w, http.StatusOK, map[string]interface{}{
-		"id":            tunnel.Spec.ID,
-		"name":          tunnel.Spec.Name,
-		"owner":         tunnel.Spec.Owner,
-		"type":          tunnel.Spec.Type,
-		"hops":          tunnel.Spec.Hops,
-		"localPort":     tunnel.Spec.LocalPort,
-		"remoteHost":    tunnel.Spec.RemoteHost,
-		"remotePort":    tunnel.Spec.RemotePort,
-		"autoReconnect": tunnel.Spec.AutoReconnect,
-		"keepAlive":     tunnel.Spec.KeepAlive.Seconds(),
-		"maxRetries":    tunnel.Spec.MaxRetries,
-		"status":        "stopped",
-		"createdAt":     tunnel.CreatedAt.Format(time.RFC3339),
-		"updatedAt":     tunnel.Spec.UpdatedAt.Format(time.RFC3339),
+		"id":               tunnel.Spec.ID,
+		"name":             tunnel.Spec.Name,
+		"owner":            tunnel.Spec.Owner,
+		"type":             tunnel.Spec.Type,
+		"hops":             tunnel.Spec.Hops,
+		"localPort":        tunnel.Spec.LocalPort,
+		"localBindAddress": tunnel.Spec.LocalBindAddress,
+		"remoteHost":       tunnel.Spec.RemoteHost,
+		"remotePort":       tunnel.Spec.RemotePort,
+		"autoReconnect":    tunnel.Spec.AutoReconnect,
+		"keepAlive":        tunnel.Spec.KeepAlive.Seconds(),
+		"maxRetries":       tunnel.Spec.MaxRetries,
+		"status":           "stopped",
+		"createdAt":        tunnel.CreatedAt.Format(time.RFC3339),
+		"updatedAt":        tunnel.Spec.UpdatedAt.Format(time.RFC3339),
 	})
 }
 
@@ -344,5 +354,78 @@ func (s *Server) handleGetTunnelMetrics(w http.ResponseWriter, r *http.Request) 
 		"connectionsActive": 1, // TODO: Track actual connections
 		"uptime":            uptime,
 		"lastHeartbeat":     time.Now().Format(time.RFC3339),
+	})
+}
+
+// handleGetLogs returns systemd service logs
+func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
+	// Parse query parameters
+	lines := r.URL.Query().Get("lines")
+	if lines == "" {
+		lines = "100" // Default to 100 lines
+	}
+
+	follow := r.URL.Query().Get("follow") == "true"
+
+	// Build journalctl command
+	args := []string{
+		"-u", "lazytunnel-server.service",
+		"-n", lines,
+		"--no-pager",
+		"-o", "json",
+	}
+
+	if follow {
+		// For SSE/streaming logs
+		args = append(args, "-f")
+	}
+
+	// Execute journalctl command
+	cmd := exec.Command("journalctl", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		s.logger.Error().Err(err).Msg("Failed to fetch logs from journalctl")
+		s.respondError(w, http.StatusInternalServerError, "Failed to fetch logs: "+err.Error())
+		return
+	}
+
+	// Parse JSON lines into array
+	lines_output := []map[string]interface{}{}
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	for scanner.Scan() {
+		var entry map[string]interface{}
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			s.logger.Warn().Err(err).Msg("Failed to parse log entry")
+			continue
+		}
+
+		// Convert MESSAGE field from byte array to string if needed
+		if msg, ok := entry["MESSAGE"]; ok {
+			switch v := msg.(type) {
+			case []interface{}:
+				// Convert byte array to string
+				byteArr := make([]byte, len(v))
+				for i, b := range v {
+					if num, ok := b.(float64); ok {
+						byteArr[i] = byte(num)
+					}
+				}
+				entry["MESSAGE"] = string(byteArr)
+			case string:
+				// Already a string, keep as is
+			}
+		}
+
+		lines_output = append(lines_output, entry)
+	}
+
+	if err := scanner.Err(); err != nil {
+		s.logger.Error().Err(err).Msg("Error reading logs")
+		s.respondError(w, http.StatusInternalServerError, "Error reading logs")
+		return
+	}
+
+	s.respondJSON(w, http.StatusOK, map[string]interface{}{
+		"logs": lines_output,
 	})
 }

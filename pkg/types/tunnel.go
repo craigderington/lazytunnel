@@ -33,21 +33,22 @@ const (
 
 // TunnelSpec defines a tunnel configuration
 type TunnelSpec struct {
-	ID            string        `json:"id"`
-	Name          string        `json:"name"`
-	Owner         string        `json:"owner"`
-	Type          TunnelType    `json:"type"`
-	Hops          []Hop         `json:"hops"`
-	LocalPort     int           `json:"local_port,omitempty"`
-	RemoteHost    string        `json:"remote_host,omitempty"`
-	RemotePort    int           `json:"remote_port,omitempty"`
-	Auth          AuthConfig    `json:"auth"`
-	AutoReconnect bool          `json:"auto_reconnect"`
-	KeepAlive     time.Duration `json:"keep_alive"`
-	MaxRetries    int           `json:"max_retries"`
-	Policy        PolicySpec    `json:"policy,omitempty"`
-	CreatedAt     time.Time     `json:"created_at"`
-	UpdatedAt     time.Time     `json:"updated_at"`
+	ID               string        `json:"id"`
+	Name             string        `json:"name"`
+	Owner            string        `json:"owner"`
+	Type             TunnelType    `json:"type"`
+	Hops             []Hop         `json:"hops"`
+	LocalPort        int           `json:"local_port,omitempty"`
+	LocalBindAddress string        `json:"local_bind_address,omitempty"`
+	RemoteHost       string        `json:"remote_host,omitempty"`
+	RemotePort       int           `json:"remote_port,omitempty"`
+	Auth             AuthConfig    `json:"auth"`
+	AutoReconnect    bool          `json:"auto_reconnect"`
+	KeepAlive        time.Duration `json:"keep_alive"`
+	MaxRetries       int           `json:"max_retries"`
+	Policy           PolicySpec    `json:"policy,omitempty"`
+	CreatedAt        time.Time     `json:"created_at"`
+	UpdatedAt        time.Time     `json:"updated_at"`
 }
 
 // Hop represents a single SSH hop in a multi-hop tunnel

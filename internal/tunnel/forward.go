@@ -47,9 +47,9 @@ type LocalForwarder struct {
 	mu          sync.RWMutex
 
 	// Lifecycle
-	ctx    context.Context
-	cancel context.CancelFunc
-	stopCh chan struct{}
+	ctx      context.Context
+	cancel   context.CancelFunc
+	stopCh   chan struct{}
 	stopOnce sync.Once
 }
 
@@ -101,8 +101,14 @@ func (lf *LocalForwarder) Start() error {
 		return fmt.Errorf("forwarder already started")
 	}
 
+	// Determine bind address (default to 0.0.0.0 to allow external access)
+	bindAddr := lf.spec.LocalBindAddress
+	if bindAddr == "" {
+		bindAddr = "0.0.0.0"
+	}
+
 	// Bind to local port (port 0 means OS chooses an ephemeral port)
-	addr := fmt.Sprintf("127.0.0.1:%d", lf.spec.LocalPort)
+	addr := fmt.Sprintf("%s:%d", bindAddr, lf.spec.LocalPort)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		lf.mu.Unlock()
@@ -325,11 +331,11 @@ func NewRemoteForwarder(ctx context.Context, spec *types.TunnelSpec, session Ses
 	fwdCtx, cancel := context.WithCancel(ctx)
 
 	rf := &RemoteForwarder{
-		spec:   spec,
+		spec:    spec,
 		session: session,
-		ctx:    fwdCtx,
-		cancel: cancel,
-		stopCh: make(chan struct{}),
+		ctx:     fwdCtx,
+		cancel:  cancel,
+		stopCh:  make(chan struct{}),
 	}
 
 	rf.stats.StartedAt = time.Now()
@@ -587,11 +593,11 @@ func NewDynamicForwarder(ctx context.Context, spec *types.TunnelSpec, session Se
 	fwdCtx, cancel := context.WithCancel(ctx)
 
 	df := &DynamicForwarder{
-		spec:   spec,
+		spec:    spec,
 		session: session,
-		ctx:    fwdCtx,
-		cancel: cancel,
-		stopCh: make(chan struct{}),
+		ctx:     fwdCtx,
+		cancel:  cancel,
+		stopCh:  make(chan struct{}),
 	}
 
 	df.stats.StartedAt = time.Now()
@@ -608,8 +614,14 @@ func (df *DynamicForwarder) Start() error {
 		return fmt.Errorf("forwarder already started")
 	}
 
+	// Determine bind address (default to 0.0.0.0 to allow external access)
+	bindAddr := df.spec.LocalBindAddress
+	if bindAddr == "" {
+		bindAddr = "0.0.0.0"
+	}
+
 	// Bind to local port
-	addr := fmt.Sprintf("127.0.0.1:%d", df.spec.LocalPort)
+	addr := fmt.Sprintf("%s:%d", bindAddr, df.spec.LocalPort)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		df.mu.Unlock()
@@ -836,10 +848,10 @@ func (df *DynamicForwarder) socks5Success(conn net.Conn) error {
 	// | 1  |  1  | X'00' |  1   | Variable |    2     |
 	// +----+-----+-------+------+----------+----------+
 	response := []byte{
-		0x05, // SOCKS version
-		0x00, // Success
-		0x00, // Reserved
-		0x01, // IPv4
+		0x05,       // SOCKS version
+		0x00,       // Success
+		0x00,       // Reserved
+		0x01,       // IPv4
 		0, 0, 0, 0, // Bind address (0.0.0.0)
 		0, 0, // Bind port (0)
 	}
@@ -850,10 +862,10 @@ func (df *DynamicForwarder) socks5Success(conn net.Conn) error {
 // socks5Error sends a SOCKS5 error response
 func (df *DynamicForwarder) socks5Error(conn net.Conn, rep byte) error {
 	response := []byte{
-		0x05, // SOCKS version
-		rep,  // Error code
-		0x00, // Reserved
-		0x01, // IPv4
+		0x05,       // SOCKS version
+		rep,        // Error code
+		0x00,       // Reserved
+		0x01,       // IPv4
 		0, 0, 0, 0, // Bind address
 		0, 0, // Bind port
 	}

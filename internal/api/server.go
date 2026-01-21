@@ -90,6 +90,9 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/tunnels/{id}/stop", s.handleStopTunnel).Methods("POST", "OPTIONS")
 	api.HandleFunc("/tunnels/{id}/status", s.handleGetTunnelStatus).Methods("GET", "OPTIONS")
 	api.HandleFunc("/tunnels/{id}/metrics", s.handleGetTunnelMetrics).Methods("GET", "OPTIONS")
+
+	// System logs
+	api.HandleFunc("/logs", s.handleGetLogs).Methods("GET", "OPTIONS")
 }
 
 // Start starts the HTTP server

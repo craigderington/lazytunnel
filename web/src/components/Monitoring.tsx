@@ -3,6 +3,7 @@ import { useTunnelStore } from '@/store/tunnelStore';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
+import { LogPanel } from './LogPanel';
 import {
   Activity,
   Server,
@@ -17,7 +18,8 @@ import {
   Circle,
   TrendingUp,
   TrendingDown,
-  Minus
+  Minus,
+  Terminal
 } from 'lucide-react';
 
 interface Event {
@@ -99,6 +101,7 @@ export function Monitoring() {
   const { tunnels } = useTunnelStore();
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [filter, setFilter] = useState<'all' | 'errors' | 'warnings' | 'info'>('all');
+  const [showLogs, setShowLogs] = useState(false);
 
   // Generate events from tunnel data
   const allEvents = useMemo(() => generateEventsFromTunnels(tunnels), [tunnels]);
@@ -178,6 +181,15 @@ export function Monitoring() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowLogs(!showLogs)}
+            className="gap-2"
+          >
+            <Terminal className="h-4 w-4" />
+            View Logs
+          </Button>
           <Button
             variant={autoRefresh ? 'default' : 'outline'}
             size="sm"
@@ -367,6 +379,9 @@ export function Monitoring() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Log Panel */}
+      <LogPanel isOpen={showLogs} onClose={() => setShowLogs(false)} />
     </div>
   );
 }
