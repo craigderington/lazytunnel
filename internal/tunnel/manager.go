@@ -130,6 +130,22 @@ func (m *Manager) connectTunnel(tunnel *Tunnel) {
 func (m *Manager) initializeTunnel(ctx context.Context, tunnel *Tunnel) error {
 	spec := tunnel.Spec
 
+	// Create disconnect callback to update tunnel status
+	onDisconnect := func(err error) {
+		errMsg := ""
+		if err != nil {
+			errMsg = fmt.Sprintf("Connection lost: %v", err)
+		} else {
+			errMsg = "Connection lost"
+		}
+		tunnel.updateStatus(types.TunnelStateFailed, errMsg)
+	}
+
+	// Create reconnect callback to restore tunnel status
+	onReconnect := func() {
+		tunnel.updateStatus(types.TunnelStateActive, "")
+	}
+
 	// Create session configuration
 	sessionConfig := SessionConfig{
 		KeepAlive:     spec.KeepAlive,
@@ -137,6 +153,8 @@ func (m *Manager) initializeTunnel(ctx context.Context, tunnel *Tunnel) error {
 		MaxRetries:    spec.MaxRetries,
 		Timeout:       10 * time.Second,
 		BackoffConfig: DefaultBackoffConfig(),
+		OnDisconnect:  onDisconnect,
+		OnReconnect:   onReconnect,
 	}
 
 	// Create SSH session (single or multi-hop)

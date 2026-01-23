@@ -67,6 +67,10 @@ type Session struct {
 	maxRetries    int
 	backoffConfig BackoffConfig
 
+	// Callbacks
+	onDisconnect DisconnectCallback
+	onReconnect  ReconnectCallback
+
 	// Context for cancellation
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -88,6 +92,12 @@ func DefaultBackoffConfig() BackoffConfig {
 	}
 }
 
+// DisconnectCallback is called when a session disconnects
+type DisconnectCallback func(err error)
+
+// ReconnectCallback is called when a session successfully reconnects
+type ReconnectCallback func()
+
 // SessionConfig contains configuration for creating an SSH session
 type SessionConfig struct {
 	Hop           *types.Hop
@@ -96,6 +106,8 @@ type SessionConfig struct {
 	MaxRetries    int
 	Timeout       time.Duration
 	BackoffConfig BackoffConfig
+	OnDisconnect  DisconnectCallback // Called when connection is lost
+	OnReconnect   ReconnectCallback  // Called when reconnection succeeds
 }
 
 // NewSession creates a new SSH session
@@ -126,6 +138,8 @@ func NewSession(ctx context.Context, config SessionConfig) (*Session, error) {
 		autoReconnect: config.AutoReconnect,
 		maxRetries:    config.MaxRetries,
 		backoffConfig: config.BackoffConfig,
+		onDisconnect:  config.OnDisconnect,
+		onReconnect:   config.OnReconnect,
 		stopKeepAlive: make(chan struct{}),
 		ctx:           sessionCtx,
 		cancel:        cancel,
@@ -397,6 +411,11 @@ func (s *Session) keepAliveLoop() {
 		select {
 		case <-ticker.C:
 			if err := s.sendKeepAlive(); err != nil {
+				// Notify listeners about disconnection
+				if s.onDisconnect != nil {
+					s.onDisconnect(err)
+				}
+
 				// Connection lost, attempt reconnect if enabled
 				if s.autoReconnect {
 					go s.reconnect()
@@ -434,16 +453,24 @@ func (s *Session) sendKeepAlive() error {
 // reconnect attempts to reconnect the session
 func (s *Session) reconnect() {
 	s.mu.Lock()
-	if !s.connected {
+	// If we're already connected, something else reconnected us
+	if s.connected {
 		s.mu.Unlock()
-		return // Already reconnecting or disconnected
+		return
 	}
-	s.connected = false
+
+	// Check if we're already in a reconnection attempt (retryCount > 0 means we're retrying)
+	// This prevents multiple goroutines from attempting reconnection simultaneously
+	if s.retryCount > 0 {
+		s.mu.Unlock()
+		return
+	}
 	s.mu.Unlock()
 
 	// Close the old client
 	if s.client != nil {
 		s.client.Close()
+		s.client = nil
 	}
 
 	// Attempt reconnection
@@ -451,6 +478,16 @@ func (s *Session) reconnect() {
 		s.mu.Lock()
 		s.lastError = fmt.Errorf("reconnect failed: %w", err)
 		s.mu.Unlock()
+
+		// Notify about final reconnection failure
+		if s.onDisconnect != nil {
+			s.onDisconnect(s.lastError)
+		}
+	} else {
+		// Reconnection succeeded!
+		if s.onReconnect != nil {
+			s.onReconnect()
+		}
 	}
 }
 
