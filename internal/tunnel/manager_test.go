@@ -36,7 +36,7 @@ func TestManagerCreateGetList(t *testing.T) {
 		RemotePort:    80,
 		AutoReconnect: true,
 		KeepAlive:     30 * time.Second,
-		MaxRetries:    3,
+		MaxRetries:    0,
 		Hops: []types.Hop{
 			{
 				Host:       "bastion.example.com",
@@ -48,18 +48,35 @@ func TestManagerCreateGetList(t *testing.T) {
 		},
 	}
 
-	// Note: This will fail because we can't actually connect to the SSH server
-	// In a real integration test, we'd set up a mock SSH server
-	// For now, we'll just test the validation logic
-
+	// Create tunnel - this will succeed and start connecting in background
+	// The connection will fail due to invalid SSH config, but the tunnel is created
 	err := manager.Create(ctx, spec)
-	if err == nil {
-		t.Error("Expected error when creating tunnel with invalid SSH config")
+	if err != nil {
+		t.Errorf("Expected no immediate error for async tunnel creation, got: %v", err)
 	}
 
-	// Verify tunnel was not added due to error
-	if len(manager.List()) != 0 {
-		t.Errorf("Expected no tunnels after failed creation, got %d", len(manager.List()))
+	// Poll for up to 15 seconds waiting for the tunnel to reach failed state
+	// (SSH connection timeout is 10s, so we need to wait longer than that)
+	var failed bool
+	for i := 0; i < 150; i++ {
+		time.Sleep(100 * time.Millisecond)
+		tunnels := manager.List()
+		if len(tunnels) == 1 {
+			status := tunnels[0].GetStatus()
+			if status != nil && status.State == types.TunnelStateFailed {
+				failed = true
+				break
+			}
+		}
+	}
+
+	// Verify tunnel exists and is in failed state
+	tunnels := manager.List()
+	if len(tunnels) != 1 {
+		t.Errorf("Expected 1 tunnel, got %d", len(tunnels))
+	} else if !failed {
+		status := tunnels[0].GetStatus()
+		t.Errorf("Expected tunnel to be in failed state, got %s", status.State)
 	}
 }
 

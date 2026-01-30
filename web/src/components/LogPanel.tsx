@@ -37,7 +37,7 @@ export function LogPanel({ isOpen, onClose }: LogPanelProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [filter, setFilter] = useState<'all' | 'error' | 'warning' | 'info'>('all');
   const logsEndRef = useRef<HTMLDivElement>(null);
-  const intervalRef = useRef<number>();
+  const intervalRef = useRef<number | undefined>(undefined);
 
   const fetchLogs = async () => {
     try {

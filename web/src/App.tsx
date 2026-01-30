@@ -5,6 +5,7 @@ import { TunnelList } from './components/TunnelList'
 import { Monitoring } from './components/Monitoring'
 import { Metrics } from './components/Metrics'
 import { Settings } from './components/Settings'
+import { useWebSocket } from './hooks/useWebSocket'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -18,6 +19,9 @@ const queryClient = new QueryClient({
 
 function App() {
   const [activePage, setActivePage] = useState<PageType>('tunnels')
+  
+  // Initialize WebSocket for real-time updates
+  useWebSocket()
 
   const renderPage = () => {
     switch (activePage) {

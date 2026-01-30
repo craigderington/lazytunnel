@@ -11,6 +11,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/craigderington/lazytunnel/internal/tunnel"
+	"github.com/craigderington/lazytunnel/pkg/types"
 )
 
 // Server represents the API server
@@ -21,13 +22,26 @@ type Server struct {
 	server      *http.Server
 	logger      zerolog.Logger
 	ctx         context.Context
+	auth        *AuthMiddleware
+	rateLimiter *RateLimiter
+	wsManager   *WebSocketManager
+}
+
+// TLSConfig holds TLS configuration
+type TLSConfig struct {
+	CertFile string
+	KeyFile  string
 }
 
 // Config holds server configuration
 type Config struct {
-	Addr    string
-	Logger  zerolog.Logger
-	Storage tunnel.Storage // Optional persistent storage
+	Addr        string
+	Logger      zerolog.Logger
+	Storage     tunnel.Storage    // Optional persistent storage
+	Auth        *AuthMiddleware   // Optional authentication middleware
+	TLS         *TLSConfig        // Optional TLS configuration
+	RateLimiter *RateLimiter      // Optional rate limiter
+	WebSocket   *WebSocketManager // Optional WebSocket manager
 }
 
 // NewServer creates a new API server
@@ -46,12 +60,27 @@ func NewServer(ctx context.Context, config Config) *Server {
 		}
 	}
 
+	// Initialize WebSocket manager if not provided
+	wsManager := config.WebSocket
+	if wsManager == nil {
+		wsManager = NewWebSocketManager()
+		wsManager.Start()
+	}
+
+	// Wire up tunnel status callback to broadcast via WebSocket
+	manager.SetStatusCallback(func(tunnelID string, status *types.TunnelStatus) {
+		wsManager.BroadcastTunnelUpdate(tunnelID, status)
+	})
+
 	s := &Server{
-		addr:    config.Addr,
-		manager: manager,
-		router:  mux.NewRouter(),
-		logger:  config.Logger,
-		ctx:     ctx,
+		addr:        config.Addr,
+		manager:     manager,
+		router:      mux.NewRouter(),
+		logger:      config.Logger,
+		ctx:         ctx,
+		auth:        config.Auth,
+		rateLimiter: config.RateLimiter,
+		wsManager:   wsManager,
 	}
 
 	s.setupRoutes()
@@ -78,27 +107,62 @@ func (s *Server) setupRoutes() {
 	// Middleware
 	api.Use(s.loggingMiddleware)
 
-	// Health check
+	// Health check (public)
 	api.HandleFunc("/health", s.handleHealth).Methods("GET", "OPTIONS")
 
-	// Tunnel operations
-	api.HandleFunc("/tunnels", s.handleListTunnels).Methods("GET", "OPTIONS")
-	api.HandleFunc("/tunnels", s.handleCreateTunnel).Methods("POST", "OPTIONS")
-	api.HandleFunc("/tunnels/{id}", s.handleGetTunnel).Methods("GET", "OPTIONS")
-	api.HandleFunc("/tunnels/{id}", s.handleDeleteTunnel).Methods("DELETE", "OPTIONS")
-	api.HandleFunc("/tunnels/{id}/start", s.handleStartTunnel).Methods("POST", "OPTIONS")
-	api.HandleFunc("/tunnels/{id}/stop", s.handleStopTunnel).Methods("POST", "OPTIONS")
-	api.HandleFunc("/tunnels/{id}/status", s.handleGetTunnelStatus).Methods("GET", "OPTIONS")
-	api.HandleFunc("/tunnels/{id}/metrics", s.handleGetTunnelMetrics).Methods("GET", "OPTIONS")
+	// Metrics endpoint (public - for Prometheus scraping)
+	api.Handle("/metrics", HandleMetrics()).Methods("GET", "OPTIONS")
 
-	// System logs
-	api.HandleFunc("/logs", s.handleGetLogs).Methods("GET", "OPTIONS")
+	// Authentication routes (public)
+	api.HandleFunc("/auth/login", s.handleLogin).Methods("POST", "OPTIONS")
+
+	// Protected routes (require authentication)
+	protected := api.PathPrefix("/").Subrouter()
+	if s.auth != nil {
+		protected.Use(s.auth.Middleware)
+	}
+
+	// Tunnel operations (protected)
+	protected.HandleFunc("/tunnels", s.handleListTunnels).Methods("GET", "OPTIONS")
+	protected.HandleFunc("/tunnels", s.handleCreateTunnel).Methods("POST", "OPTIONS")
+	protected.HandleFunc("/tunnels/{id}", s.handleGetTunnel).Methods("GET", "OPTIONS")
+	protected.HandleFunc("/tunnels/{id}", s.handleDeleteTunnel).Methods("DELETE", "OPTIONS")
+	protected.HandleFunc("/tunnels/{id}/start", s.handleStartTunnel).Methods("POST", "OPTIONS")
+	protected.HandleFunc("/tunnels/{id}/stop", s.handleStopTunnel).Methods("POST", "OPTIONS")
+	protected.HandleFunc("/tunnels/{id}/status", s.handleGetTunnelStatus).Methods("GET", "OPTIONS")
+	protected.HandleFunc("/tunnels/{id}/metrics", s.handleGetTunnelMetrics).Methods("GET", "OPTIONS")
+
+	// System logs (protected)
+	protected.HandleFunc("/logs", s.handleGetLogs).Methods("GET", "OPTIONS")
+
+	// WebSocket endpoint for real-time updates (protected)
+	protected.HandleFunc("/ws", s.wsManager.HandleWebSocket)
+
+	// Static files (web frontend) - serve from web/dist
+	s.router.PathPrefix("/").Handler(
+		http.StripPrefix("/", http.FileServer(http.Dir("web/dist"))),
+	)
 }
 
-// Start starts the HTTP server
+// Start starts the HTTP server (with optional TLS)
 func (s *Server) Start() error {
+	if s.server.TLSConfig != nil {
+		s.logger.Info().
+			Str("addr", s.addr).
+			Msg("Starting API server with TLS")
+		return s.server.ListenAndServeTLS("", "")
+	}
 	s.logger.Info().Str("addr", s.addr).Msg("Starting API server")
 	return s.server.ListenAndServe()
+}
+
+// StartTLS starts the HTTP server with TLS
+func (s *Server) StartTLS(certFile, keyFile string) error {
+	s.logger.Info().
+		Str("addr", s.addr).
+		Str("cert", certFile).
+		Msg("Starting API server with TLS")
+	return s.server.ListenAndServeTLS(certFile, keyFile)
 }
 
 // Shutdown gracefully shuts down the server
@@ -113,6 +177,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// Shutdown tunnel manager
 	if err := s.manager.Shutdown(); err != nil {
 		return fmt.Errorf("failed to shutdown tunnel manager: %w", err)
+	}
+
+	// Shutdown WebSocket manager
+	if s.wsManager != nil {
+		s.wsManager.Stop()
+		s.logger.Info().Msg("WebSocket manager stopped")
 	}
 
 	return nil

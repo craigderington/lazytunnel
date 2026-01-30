@@ -51,13 +51,27 @@ type TunnelSpec struct {
 	UpdatedAt        time.Time     `json:"updated_at"`
 }
 
+// HostKeyVerification represents host key verification strategies
+type HostKeyVerification string
+
+const (
+	// HostKeyVerifyStrict requires matching known_hosts entry
+	HostKeyVerifyStrict HostKeyVerification = "strict"
+	// HostKeyVerifyPrompt prompts user on new hosts (not available in API mode)
+	HostKeyVerifyPrompt HostKeyVerification = "prompt"
+	// HostKeyVerifyInsecure accepts any host key (INSECURE - for development only)
+	HostKeyVerifyInsecure HostKeyVerification = "insecure"
+)
+
 // Hop represents a single SSH hop in a multi-hop tunnel
 type Hop struct {
-	Host       string     `json:"host"`
-	Port       int        `json:"port"`
-	User       string     `json:"user"`
-	AuthMethod AuthMethod `json:"auth_method"`
-	KeyID      string     `json:"key_id,omitempty"`
+	Host                string              `json:"host"`
+	Port                int                 `json:"port"`
+	User                string              `json:"user"`
+	AuthMethod          AuthMethod          `json:"auth_method"`
+	KeyID               string              `json:"key_id,omitempty"`
+	HostKeyVerification HostKeyVerification `json:"host_key_verification,omitempty"`
+	KnownHostsPath      string              `json:"known_hosts_path,omitempty"`
 }
 
 // AuthConfig contains authentication configuration

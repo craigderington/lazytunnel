@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
+	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/craigderington/lazytunnel/pkg/types"
 )
@@ -52,11 +53,11 @@ type Session struct {
 	config *ssh.ClientConfig
 
 	// Connection state
-	connected    bool
-	lastError    error
-	retryCount   int
-	connectedAt  *time.Time
-	mu           sync.RWMutex
+	connected   bool
+	lastError   error
+	retryCount  int
+	connectedAt *time.Time
+	mu          sync.RWMutex
 
 	// Keep-alive
 	keepAlive     time.Duration
@@ -324,10 +325,15 @@ func (s *Session) ConnectWithRetry() error {
 
 // buildSSHConfig builds an ssh.ClientConfig based on the hop configuration
 func (s *Session) buildSSHConfig(timeout time.Duration) (*ssh.ClientConfig, error) {
+	hostKeyCallback, err := s.buildHostKeyCallback()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build host key callback: %w", err)
+	}
+
 	config := &ssh.ClientConfig{
 		User:            s.hop.User,
 		Timeout:         timeout,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // TODO: Implement proper host key verification
+		HostKeyCallback: hostKeyCallback,
 	}
 
 	// Configure authentication based on method
@@ -357,6 +363,67 @@ func (s *Session) buildSSHConfig(timeout time.Duration) (*ssh.ClientConfig, erro
 	}
 
 	return config, nil
+}
+
+// buildHostKeyCallback creates the appropriate host key verification callback
+func (s *Session) buildHostKeyCallback() (ssh.HostKeyCallback, error) {
+	// Default to strict verification if not specified
+	verification := s.hop.HostKeyVerification
+	if verification == "" {
+		verification = types.HostKeyVerifyStrict
+	}
+
+	switch verification {
+	case types.HostKeyVerifyStrict:
+		return s.buildStrictHostKeyCallback()
+	case types.HostKeyVerifyPrompt:
+		return s.buildPromptHostKeyCallback()
+	case types.HostKeyVerifyInsecure:
+		// Return insecure callback with warning
+		return ssh.InsecureIgnoreHostKey(), nil
+	default:
+		return nil, fmt.Errorf("unsupported host key verification mode: %s", verification)
+	}
+}
+
+// buildStrictHostKeyCallback creates a callback that verifies against known_hosts file
+func (s *Session) buildStrictHostKeyCallback() (ssh.HostKeyCallback, error) {
+	// Use provided known_hosts path or default to ~/.ssh/known_hosts
+	knownHostsPath := s.hop.KnownHostsPath
+	if knownHostsPath == "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get home directory: %w", err)
+		}
+		knownHostsPath = filepath.Join(homeDir, ".ssh", "known_hosts")
+	}
+
+	// Expand ~ in path
+	expandedPath, err := expandPath(knownHostsPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to expand known_hosts path: %w", err)
+	}
+
+	// Check if known_hosts file exists
+	if _, err := os.Stat(expandedPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("known_hosts file not found at %s. Run 'ssh-keyscan %s >> %s' to add the host",
+			expandedPath, s.hop.Host, expandedPath)
+	}
+
+	// Create known hosts callback
+	callback, err := knownhosts.New(expandedPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse known_hosts file %s: %w", expandedPath, err)
+	}
+
+	return callback, nil
+}
+
+// buildPromptHostKeyCallback creates a callback that prompts for new host keys
+func (s *Session) buildPromptHostKeyCallback() (ssh.HostKeyCallback, error) {
+	// For API/background use, strict verification is preferred
+	// This is a placeholder for interactive mode where user can accept new keys
+	return s.buildStrictHostKeyCallback()
 }
 
 // keyAuth creates SSH public key authentication
@@ -520,10 +587,10 @@ type SessionStatus struct {
 
 // MultiHopSession manages a chain of SSH sessions for multi-hop tunneling
 type MultiHopSession struct {
-	hops     []*Session
-	mu       sync.RWMutex
-	ctx      context.Context
-	cancel   context.CancelFunc
+	hops   []*Session
+	mu     sync.RWMutex
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // NewMultiHopSession creates a new multi-hop SSH session chain

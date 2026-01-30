@@ -16,12 +16,38 @@ import (
 	"github.com/craigderington/lazytunnel/pkg/types"
 )
 
-// handleHealth returns server health status
+// handleHealth returns comprehensive server health status
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	s.respondJSON(w, http.StatusOK, map[string]interface{}{
-		"status": "healthy",
-		"time":   time.Now().UTC(),
-	})
+	// Deep health check: verify system components
+	health := map[string]interface{}{
+		"status":  "healthy",
+		"time":    time.Now().UTC(),
+		"version": "dev",
+	}
+
+	// Check tunnel manager
+	tunnels := s.manager.List()
+	activeCount := 0
+	failedCount := 0
+	for _, t := range tunnels {
+		status := t.GetStatus()
+		if status != nil {
+			switch status.State {
+			case types.TunnelStateActive:
+				activeCount++
+			case types.TunnelStateFailed:
+				failedCount++
+			}
+		}
+	}
+
+	health["tunnels"] = map[string]interface{}{
+		"total":  len(tunnels),
+		"active": activeCount,
+		"failed": failedCount,
+	}
+
+	s.respondJSON(w, http.StatusOK, health)
 }
 
 // handleListTunnels returns all active tunnels
@@ -77,31 +103,37 @@ func (s *Server) handleListTunnels(w http.ResponseWriter, r *http.Request) {
 
 // handleCreateTunnel creates a new tunnel
 func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name             string           `json:"name"`
-		Type             types.TunnelType `json:"type"`
-		Hops             []types.Hop      `json:"hops"`
-		LocalPort        int              `json:"localPort"`
-		LocalBindAddress string           `json:"localBindAddress"`
-		RemoteHost       string           `json:"remoteHost"`
-		RemotePort       int              `json:"remotePort"`
-		AutoReconnect    bool             `json:"autoReconnect"`
-		KeepAlive        int              `json:"keepAlive"` // seconds
-		MaxRetries       int              `json:"maxRetries"`
+	var req CreateTunnelRequest
+	if !s.decodeAndValidate(w, r, &req) {
+		return
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.respondError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
-		return
+	// Convert validated hops to types.Hop
+	hops := make([]types.Hop, len(req.Hops))
+	for i, h := range req.Hops {
+		hops[i] = types.Hop{
+			Host:                h.Host,
+			Port:                h.Port,
+			User:                h.User,
+			AuthMethod:          types.AuthMethod(h.AuthMethod),
+			KeyID:               h.KeyID,
+			HostKeyVerification: types.HostKeyVerifyStrict, // Default to strict verification
+		}
+	}
+
+	// Determine owner from context if authenticated
+	owner := "api-user"
+	if user, ok := GetUser(r.Context()); ok {
+		owner = user.Username
 	}
 
 	// Build spec
 	spec := types.TunnelSpec{
 		ID:               uuid.New().String(),
-		Name:             req.Name,
-		Owner:            "api-user", // TODO: Get from auth context
-		Type:             req.Type,
-		Hops:             req.Hops,
+		Name:             SanitizeString(req.Name),
+		Owner:            owner,
+		Type:             types.TunnelType(req.Type),
+		Hops:             hops,
 		LocalPort:        req.LocalPort,
 		LocalBindAddress: req.LocalBindAddress,
 		RemoteHost:       req.RemoteHost,
@@ -125,7 +157,7 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 	// Using context.Background() so tunnel lives beyond HTTP request
 	if err := s.manager.Create(context.Background(), &spec); err != nil {
 		s.logger.Error().Err(err).Str("tunnel_id", spec.ID).Msg("Failed to create tunnel")
-		s.respondError(w, http.StatusInternalServerError, "Failed to create tunnel: "+err.Error())
+		s.InternalError(w, "Failed to create tunnel")
 		return
 	}
 
@@ -163,7 +195,7 @@ func (s *Server) handleGetTunnel(w http.ResponseWriter, r *http.Request) {
 
 	tunnel, err := s.manager.Get(tunnelID)
 	if err != nil {
-		s.respondError(w, http.StatusNotFound, "Tunnel not found")
+		s.TunnelNotFound(w, tunnelID)
 		return
 	}
 
@@ -216,7 +248,7 @@ func (s *Server) handleGetTunnelStatus(w http.ResponseWriter, r *http.Request) {
 
 	tunnel, err := s.manager.Get(tunnelID)
 	if err != nil {
-		s.respondError(w, http.StatusNotFound, "Tunnel not found")
+		s.TunnelNotFound(w, tunnelID)
 		return
 	}
 
@@ -234,7 +266,7 @@ func (s *Server) handleDeleteTunnel(w http.ResponseWriter, r *http.Request) {
 		// Check if it's a "not found" error - that's a real error
 		if err.Error() == fmt.Sprintf("tunnel %s not found", tunnelID) {
 			s.logger.Error().Err(err).Str("tunnel_id", tunnelID).Msg("Tunnel not found")
-			s.respondError(w, http.StatusNotFound, "Tunnel not found")
+			s.TunnelNotFound(w, tunnelID)
 			return
 		}
 		// Otherwise, tunnel was deleted but had stop errors (e.g. already failed)
@@ -254,7 +286,7 @@ func (s *Server) handleStartTunnel(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.manager.Start(r.Context(), tunnelID); err != nil {
 		s.logger.Error().Err(err).Str("tunnel_id", tunnelID).Msg("Failed to start tunnel")
-		s.respondError(w, http.StatusInternalServerError, "Failed to start tunnel: "+err.Error())
+		s.TunnelConnectionError(w, tunnelID, err.Error())
 		return
 	}
 
@@ -263,7 +295,7 @@ func (s *Server) handleStartTunnel(w http.ResponseWriter, r *http.Request) {
 	// Get updated tunnel state
 	tunnel, err := s.manager.Get(tunnelID)
 	if err != nil {
-		s.respondError(w, http.StatusNotFound, "Tunnel not found after start")
+		s.TunnelNotFound(w, tunnelID)
 		return
 	}
 
@@ -293,7 +325,7 @@ func (s *Server) handleStopTunnel(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.manager.Stop(r.Context(), tunnelID); err != nil {
 		s.logger.Error().Err(err).Str("tunnel_id", tunnelID).Msg("Failed to stop tunnel")
-		s.respondError(w, http.StatusInternalServerError, "Failed to stop tunnel: "+err.Error())
+		s.InternalError(w, "Failed to stop tunnel")
 		return
 	}
 
@@ -302,7 +334,7 @@ func (s *Server) handleStopTunnel(w http.ResponseWriter, r *http.Request) {
 	// Get updated tunnel state
 	tunnel, err := s.manager.Get(tunnelID)
 	if err != nil {
-		s.respondError(w, http.StatusNotFound, "Tunnel not found after stop")
+		s.TunnelNotFound(w, tunnelID)
 		return
 	}
 
@@ -332,13 +364,13 @@ func (s *Server) handleGetTunnelMetrics(w http.ResponseWriter, r *http.Request) 
 
 	tunnel, err := s.manager.Get(tunnelID)
 	if err != nil {
-		s.respondError(w, http.StatusNotFound, "Tunnel not found")
+		s.TunnelNotFound(w, tunnelID)
 		return
 	}
 
 	status := tunnel.GetStatus()
 	if status == nil {
-		s.respondError(w, http.StatusNotFound, "Tunnel status not available")
+		s.NotFound(w, "Tunnel status")
 		return
 	}
 
@@ -427,5 +459,63 @@ func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 
 	s.respondJSON(w, http.StatusOK, map[string]interface{}{
 		"logs": lines_output,
+	})
+}
+
+// handleLogin handles user authentication and returns a JWT token
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.BadRequest(w, "Invalid request body: "+err.Error())
+		return
+	}
+
+	// Validate required fields
+	if req.Username == "" || req.Password == "" {
+		s.ValidationError(w, "Username and password are required", []ValidationError{
+			{Field: "username", Message: "Username is required"},
+			{Field: "password", Message: "Password is required"},
+		})
+		return
+	}
+
+	// Check if authentication is configured
+	if s.auth == nil {
+		s.ServiceUnavailableError(w, "Authentication not configured")
+		return
+	}
+
+	// For now, use simple hardcoded credentials (replace with proper user management)
+	// In production, this should verify against a user database
+	if req.Username != "admin" || req.Password != "lazytunnel" {
+		s.InvalidCredentialsError(w)
+		return
+	}
+
+	// Generate JWT token
+	token, err := s.auth.GenerateToken(
+		"user-1",                 // User ID
+		req.Username,             // Username
+		"admin@lazytunnel.local", // Email
+		[]string{"admin"},        // Roles
+	)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("Failed to generate token")
+		s.InternalError(w, "Failed to generate authentication token")
+		return
+	}
+
+	s.logger.Info().
+		Str("username", req.Username).
+		Msg("User logged in successfully")
+
+	s.respondJSON(w, http.StatusOK, map[string]interface{}{
+		"token":     token,
+		"tokenType": "Bearer",
+		"expiresIn": 86400, // 24 hours in seconds
 	})
 }

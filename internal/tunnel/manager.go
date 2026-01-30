@@ -19,20 +19,39 @@ type Storage interface {
 	Close() error
 }
 
+// StatusCallback is called when tunnel status changes
+type StatusCallback func(tunnelID string, status *types.TunnelStatus)
+
 // Manager handles the lifecycle of SSH tunnels
 type Manager struct {
-	tunnels map[string]*Tunnel
-	mu      sync.RWMutex
-	ctx     context.Context
-	storage Storage // Optional persistent storage
+	tunnels        map[string]*Tunnel
+	mu             sync.RWMutex
+	ctx            context.Context
+	storage        Storage               // Optional persistent storage
+	statusCallback StatusCallback        // Optional callback for status changes
+	circuitBreaker *TunnelCircuitBreaker // Circuit breaker for tunnel connections
 }
 
-// NewManager creates a new tunnel manager
-func NewManager(ctx context.Context) *Manager {
-	return &Manager{
-		tunnels: make(map[string]*Tunnel),
-		ctx:     ctx,
+// NewManager creates a new tunnel manager with optional circuit breaker configuration
+func NewManager(ctx context.Context, cbConfig ...CircuitBreakerConfig) *Manager {
+	// Use default config if not provided, otherwise use the first one
+	config := DefaultCircuitBreakerConfig()
+	if len(cbConfig) > 0 {
+		config = cbConfig[0]
 	}
+
+	return &Manager{
+		tunnels:        make(map[string]*Tunnel),
+		ctx:            ctx,
+		circuitBreaker: NewTunnelCircuitBreaker(config),
+	}
+}
+
+// SetCircuitBreaker sets the circuit breaker configuration for the manager
+func (m *Manager) SetCircuitBreaker(config CircuitBreakerConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.circuitBreaker = NewTunnelCircuitBreaker(config)
 }
 
 // SetStorage configures persistent storage for the manager
@@ -40,6 +59,13 @@ func (m *Manager) SetStorage(storage Storage) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.storage = storage
+}
+
+// SetStatusCallback sets a callback function that is invoked when tunnel status changes
+func (m *Manager) SetStatusCallback(cb StatusCallback) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.statusCallback = cb
 }
 
 // LoadFromStorage restores tunnels from persistent storage
@@ -94,9 +120,10 @@ func (m *Manager) Create(ctx context.Context, spec *types.TunnelSpec) error {
 
 	// Initialize tunnel with "connecting" status
 	tunnel := &Tunnel{
-		Spec:      spec,
-		CreatedAt: time.Now(),
-		ctx:       ctx,
+		Spec:           spec,
+		CreatedAt:      time.Now(),
+		ctx:            ctx,
+		statusCallback: m.statusCallback,
 		Status: &types.TunnelStatus{
 			TunnelID:  spec.ID,
 			State:     types.TunnelStatePending,
@@ -115,12 +142,26 @@ func (m *Manager) Create(ctx context.Context, spec *types.TunnelSpec) error {
 
 // connectTunnel establishes the SSH connection and starts forwarding in a goroutine
 func (m *Manager) connectTunnel(tunnel *Tunnel) {
+	// Get or create circuit breaker for this tunnel
+	breaker := m.circuitBreaker.GetBreaker(tunnel.Spec.ID)
+
+	// Check if circuit breaker allows connection
+	if err := breaker.Allow(); err != nil {
+		tunnel.updateStatus(types.TunnelStateFailed, fmt.Sprintf("Circuit breaker blocked: %v", err))
+		return
+	}
+
 	// Create and connect the tunnel
 	err := m.initializeTunnel(tunnel.ctx, tunnel)
 	if err != nil {
+		// Record failure in circuit breaker
+		breaker.RecordFailure()
 		tunnel.updateStatus(types.TunnelStateFailed, fmt.Sprintf("Failed to connect: %v", err))
 		return
 	}
+
+	// Record success in circuit breaker
+	breaker.RecordSuccess()
 
 	// Success!
 	tunnel.updateStatus(types.TunnelStateActive, "")
@@ -282,6 +323,11 @@ func (m *Manager) Delete(ctx context.Context, tunnelID string) error {
 	// (failed tunnels need to be deletable)
 	delete(m.tunnels, tunnelID)
 
+	// Remove circuit breaker for this tunnel
+	if m.circuitBreaker != nil {
+		m.circuitBreaker.RemoveBreaker(tunnelID)
+	}
+
 	// Return stop error only if it was something serious
 	// (but tunnel is already deleted from map)
 	if stopErr != nil {
@@ -379,6 +425,9 @@ type Tunnel struct {
 	// Lifecycle
 	ctx context.Context
 	mu  sync.RWMutex
+
+	// Status callback
+	statusCallback StatusCallback
 }
 
 // connect establishes the SSH session
@@ -469,6 +518,11 @@ func (t *Tunnel) updateStatus(state types.TunnelState, errorMsg string) {
 		stats := t.forwarder.Stats()
 		t.Status.BytesSent = stats.BytesSent
 		t.Status.BytesReceived = stats.BytesReceived
+	}
+
+	// Call status callback if configured
+	if t.statusCallback != nil {
+		t.statusCallback(t.Spec.ID, t.Status)
 	}
 }
 

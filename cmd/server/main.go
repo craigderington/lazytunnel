@@ -16,10 +16,13 @@ import (
 )
 
 var (
-	version = "dev"
-	addr    = flag.String("addr", ":8080", "HTTP server address")
-	debug   = flag.Bool("debug", false, "Enable debug logging")
-	dbPath  = flag.String("db", "tunnels.db", "Path to SQLite database file")
+	version   = "dev"
+	addr      = flag.String("addr", ":8080", "HTTP server address")
+	debug     = flag.Bool("debug", false, "Enable debug logging")
+	dbPath    = flag.String("db", "tunnels.db", "Path to SQLite database file")
+	jwtSecret = flag.String("jwt-secret", "", "JWT secret for API authentication (or set LAZYTUNNEL_JWT_SECRET env var)")
+	tlsCert   = flag.String("tls-cert", "", "Path to TLS certificate file")
+	tlsKey    = flag.String("tls-key", "", "Path to TLS key file")
 )
 
 func main() {
@@ -52,23 +55,63 @@ func main() {
 
 	log.Info().Str("db_path", *dbPath).Msg("Initialized SQLite storage")
 
+	// Initialize authentication if JWT secret is configured
+	var auth *api.AuthMiddleware
+	jwtSecretValue := *jwtSecret
+	if jwtSecretValue == "" {
+		jwtSecretValue = os.Getenv("LAZYTUNNEL_JWT_SECRET")
+	}
+
+	if jwtSecretValue != "" {
+		auth = api.NewAuthMiddleware(jwtSecretValue, 24*time.Hour)
+		log.Info().Msg("Authentication enabled with JWT")
+	} else {
+		log.Warn().Msg("No JWT secret configured - API will run without authentication")
+	}
+
+	// Setup TLS configuration if certificates are provided
+	var tlsConfig *api.TLSConfig
+	if *tlsCert != "" && *tlsKey != "" {
+		tlsConfig = &api.TLSConfig{
+			CertFile: *tlsCert,
+			KeyFile:  *tlsKey,
+		}
+		log.Info().
+			Str("cert", *tlsCert).
+			Str("key", *tlsKey).
+			Msg("TLS enabled")
+	}
+
 	// Create API server
 	server := api.NewServer(ctx, api.Config{
 		Addr:    *addr,
 		Logger:  log.Logger,
 		Storage: store,
+		Auth:    auth,
+		TLS:     tlsConfig,
 	})
 
 	// Start server in goroutine
 	go func() {
-		if err := server.Start(); err != nil {
+		var err error
+		if tlsConfig != nil {
+			err = server.StartTLS(tlsConfig.CertFile, tlsConfig.KeyFile)
+		} else {
+			err = server.Start()
+		}
+		if err != nil {
 			log.Fatal().Err(err).Msg("Server failed")
 		}
 	}()
 
 	log.Info().Msg("Server started successfully")
-	log.Info().Msgf("API available at http://localhost%s/api/v1", *addr)
-	log.Info().Msgf("Health check: http://localhost%s/api/v1/health", *addr)
+	if tlsConfig != nil {
+		log.Info().Msgf("API available at https://localhost%s/api/v1", *addr)
+		log.Info().Msgf("Health check: https://localhost%s/api/v1/health", *addr)
+	} else {
+		log.Info().Msgf("API available at http://localhost%s/api/v1", *addr)
+		log.Info().Msgf("Health check: http://localhost%s/api/v1/health", *addr)
+	}
 
 	// Wait for interrupt signal
 	sigChan := make(chan os.Signal, 1)
