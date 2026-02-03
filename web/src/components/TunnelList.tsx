@@ -98,7 +98,7 @@ export function TunnelList() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {tunnels.map((tunnel) => (
+        {[...tunnels].sort((a, b) => a.name.localeCompare(b.name)).map((tunnel) => (
           <TunnelCard
             key={tunnel.id}
             tunnel={tunnel}

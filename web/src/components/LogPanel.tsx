@@ -133,8 +133,8 @@ export function LogPanel({ isOpen, onClose }: LogPanelProps) {
 
   return (
     <div
-      className="fixed inset-x-0 bottom-0 z-50 animate-in slide-in-from-bottom duration-300"
-      style={{ height: '70vh' }}
+      className="fixed inset-x-0 bottom-0 z-50 animate-in slide-in-from-bottom duration-300 w-full"
+      style={{ height: '70vh', maxHeight: '70vh' }}
     >
       <Card className="h-full rounded-t-lg rounded-b-none border-x-0 border-b-0 shadow-2xl">
         <CardHeader className="border-b bg-muted/30">
@@ -172,7 +172,7 @@ export function LogPanel({ isOpen, onClose }: LogPanelProps) {
           </div>
         </CardHeader>
 
-        <CardContent className="p-4 space-y-4 h-[calc(100%-5rem)] overflow-hidden flex flex-col">
+        <CardContent className="p-4 space-y-4 h-[calc(100%-5rem)] overflow-hidden flex flex-col relative">
           {/* Filters */}
           <div className="flex items-center gap-2">
             <div className="relative flex-1">
