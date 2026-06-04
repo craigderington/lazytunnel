@@ -31,11 +31,21 @@ const (
 	AuthMethodCert     AuthMethod = "cert"
 )
 
+// DesiredStatus is the control-plane target state for a tunnel.
+type DesiredStatus string
+
+const (
+	DesiredStatusStopped DesiredStatus = "stopped"
+	DesiredStatusActive  DesiredStatus = "active"
+)
+
 // TunnelSpec defines a tunnel configuration
 type TunnelSpec struct {
 	ID               string        `json:"id"`
 	Name             string        `json:"name"`
 	Owner            string        `json:"owner"`
+	AgentID          string        `json:"agent_id,omitempty"` // empty = run on API server (embedded)
+	DesiredStatus    DesiredStatus `json:"desired_status,omitempty"`
 	Type             TunnelType    `json:"type"`
 	Hops             []Hop         `json:"hops"`
 	LocalPort        int           `json:"local_port,omitempty"`

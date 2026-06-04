@@ -1,0 +1,18 @@
+[Unit]
+Description=LazyTunnel Data-Plane Agent
+After=network-online.target lazytunnel.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cd
+Group=cd
+WorkingDirectory=/home/cd/Work/lazytunnel
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+EnvironmentFile=-/etc/default/lazytunnel
+ExecStart=/home/cd/Work/lazytunnel/agent --server http://127.0.0.1:8080/api/v1 --id %H
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

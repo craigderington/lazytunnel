@@ -16,6 +16,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { Input } from './ui/input';
+import { api } from '@/api/client';
 
 interface LogEntry {
   __REALTIME_TIMESTAMP: string;
@@ -42,9 +43,8 @@ export function LogPanel({ isOpen, onClose }: LogPanelProps) {
   const fetchLogs = async () => {
     try {
       setLoading(true);
-      const response = await fetch('http://localhost:8080/api/v1/logs?lines=200');
-      const data = await response.json();
-      setLogs(data.logs || []);
+      const data = await api.getLogs(200);
+      setLogs((data.logs || []) as unknown as LogEntry[]);
     } catch (error) {
       console.error('Failed to fetch logs:', error);
     } finally {
@@ -143,7 +143,7 @@ export function LogPanel({ isOpen, onClose }: LogPanelProps) {
               <Terminal className="h-5 w-5" />
               <div>
                 <CardTitle>System Logs</CardTitle>
-                <CardDescription>lazytunnel-server.service logs from journalctl</CardDescription>
+                <CardDescription>lazytunnel.service logs from journalctl</CardDescription>
               </div>
             </div>
             <div className="flex items-center gap-2">

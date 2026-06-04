@@ -56,6 +56,7 @@ type CreateTunnelRequest struct {
 	AutoReconnect    bool     `json:"autoReconnect"`
 	KeepAlive        int      `json:"keepAlive" validate:"min=0,max=300"`
 	MaxRetries       int      `json:"maxRetries" validate:"min=0,max=100"`
+	AgentID          string   `json:"agentId" validate:"omitempty,max=100"`
 }
 
 // HopReq represents a single hop in a validated tunnel request

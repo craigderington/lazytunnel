@@ -74,9 +74,20 @@ func (s *SQLiteStore) initSchema() error {
 	if _, err := s.db.Exec(`
 		ALTER TABLE tunnels ADD COLUMN local_bind_address TEXT DEFAULT '127.0.0.1'
 	`); err != nil {
-		// Ignore "duplicate column name" error
 		if !isDuplicateColumnError(err) {
 			return fmt.Errorf("failed to add local_bind_address column: %w", err)
+		}
+	}
+
+	if _, err := s.db.Exec(`ALTER TABLE tunnels ADD COLUMN agent_id TEXT DEFAULT ''`); err != nil {
+		if !isDuplicateColumnError(err) {
+			return fmt.Errorf("failed to add agent_id column: %w", err)
+		}
+	}
+
+	if _, err := s.db.Exec(`ALTER TABLE tunnels ADD COLUMN desired_status TEXT DEFAULT 'stopped'`); err != nil {
+		if !isDuplicateColumnError(err) {
+			return fmt.Errorf("failed to add desired_status column: %w", err)
 		}
 	}
 
@@ -114,17 +125,24 @@ func (s *SQLiteStore) Save(ctx context.Context, spec *types.TunnelSpec) error {
 		return fmt.Errorf("failed to marshal hops: %w", err)
 	}
 
+	desired := string(spec.DesiredStatus)
+	if desired == "" {
+		desired = "stopped"
+	}
+
 	query := `
 		INSERT OR REPLACE INTO tunnels (
-			id, name, owner, type, hops, local_port, local_bind_address, remote_host, remote_port,
-			auto_reconnect, keep_alive, max_retries, status, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			id, name, owner, agent_id, desired_status, type, hops, local_port, local_bind_address,
+			remote_host, remote_port, auto_reconnect, keep_alive, max_retries, status, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err = s.db.ExecContext(ctx, query,
 		spec.ID,
 		spec.Name,
 		spec.Owner,
+		spec.AgentID,
+		desired,
 		spec.Type,
 		string(hopsJSON),
 		spec.LocalPort,
@@ -134,7 +152,7 @@ func (s *SQLiteStore) Save(ctx context.Context, spec *types.TunnelSpec) error {
 		spec.AutoReconnect,
 		int(spec.KeepAlive.Seconds()),
 		spec.MaxRetries,
-		"stopped", // Initially saved as stopped
+		"stopped",
 		spec.CreatedAt,
 		spec.UpdatedAt,
 	)
@@ -167,6 +185,20 @@ func (s *SQLiteStore) UpdateStatus(ctx context.Context, tunnelID, status string)
 	return nil
 }
 
+// UpdateDesiredStatus sets the control-plane desired state for a tunnel.
+func (s *SQLiteStore) UpdateDesiredStatus(ctx context.Context, tunnelID string, status types.DesiredStatus) error {
+	query := `UPDATE tunnels SET desired_status = ?, updated_at = ? WHERE id = ?`
+	result, err := s.db.ExecContext(ctx, query, string(status), time.Now(), tunnelID)
+	if err != nil {
+		return fmt.Errorf("failed to update desired status: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("tunnel not found: %s", tunnelID)
+	}
+	return nil
+}
+
 // Delete removes a tunnel from the database
 func (s *SQLiteStore) Delete(ctx context.Context, tunnelID string) error {
 	query := `DELETE FROM tunnels WHERE id = ?`
@@ -191,8 +223,8 @@ func (s *SQLiteStore) Delete(ctx context.Context, tunnelID string) error {
 // Get retrieves a tunnel spec by ID
 func (s *SQLiteStore) Get(ctx context.Context, tunnelID string) (*types.TunnelSpec, error) {
 	query := `
-		SELECT id, name, owner, type, hops, local_port, local_bind_address, remote_host, remote_port,
-		       auto_reconnect, keep_alive, max_retries, status, created_at, updated_at
+		SELECT id, name, owner, agent_id, desired_status, type, hops, local_port, local_bind_address,
+		       remote_host, remote_port, auto_reconnect, keep_alive, max_retries, status, created_at, updated_at
 		FROM tunnels
 		WHERE id = ?
 	`
@@ -201,11 +233,14 @@ func (s *SQLiteStore) Get(ctx context.Context, tunnelID string) (*types.TunnelSp
 	var hopsJSON string
 	var keepAliveSeconds int
 	var status string
+	var desired string
 
 	err := s.db.QueryRowContext(ctx, query, tunnelID).Scan(
 		&spec.ID,
 		&spec.Name,
 		&spec.Owner,
+		&spec.AgentID,
+		&desired,
 		&spec.Type,
 		&hopsJSON,
 		&spec.LocalPort,
@@ -233,6 +268,7 @@ func (s *SQLiteStore) Get(ctx context.Context, tunnelID string) (*types.TunnelSp
 	}
 
 	spec.KeepAlive = time.Duration(keepAliveSeconds) * time.Second
+	spec.DesiredStatus = types.DesiredStatus(desired)
 
 	return &spec, nil
 }
@@ -240,8 +276,8 @@ func (s *SQLiteStore) Get(ctx context.Context, tunnelID string) (*types.TunnelSp
 // List retrieves all tunnel specs
 func (s *SQLiteStore) List(ctx context.Context) ([]*types.TunnelSpec, error) {
 	query := `
-		SELECT id, name, owner, type, hops, local_port, local_bind_address, remote_host, remote_port,
-		       auto_reconnect, keep_alive, max_retries, status, created_at, updated_at
+		SELECT id, name, owner, agent_id, desired_status, type, hops, local_port, local_bind_address,
+		       remote_host, remote_port, auto_reconnect, keep_alive, max_retries, status, created_at, updated_at
 		FROM tunnels
 		ORDER BY created_at DESC
 	`
@@ -255,40 +291,11 @@ func (s *SQLiteStore) List(ctx context.Context) ([]*types.TunnelSpec, error) {
 	var specs []*types.TunnelSpec
 
 	for rows.Next() {
-		var spec types.TunnelSpec
-		var hopsJSON string
-		var keepAliveSeconds int
-		var status string
-
-		err := rows.Scan(
-			&spec.ID,
-			&spec.Name,
-			&spec.Owner,
-			&spec.Type,
-			&hopsJSON,
-			&spec.LocalPort,
-			&spec.LocalBindAddress,
-			&spec.RemoteHost,
-			&spec.RemotePort,
-			&spec.AutoReconnect,
-			&keepAliveSeconds,
-			&spec.MaxRetries,
-			&status,
-			&spec.CreatedAt,
-			&spec.UpdatedAt,
-		)
+		spec, err := scanTunnelRow(rows)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan tunnel: %w", err)
+			return nil, err
 		}
-
-		// Unmarshal hops
-		if err := json.Unmarshal([]byte(hopsJSON), &spec.Hops); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal hops: %w", err)
-		}
-
-		spec.KeepAlive = time.Duration(keepAliveSeconds) * time.Second
-
-		specs = append(specs, &spec)
+		specs = append(specs, spec)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -296,6 +303,69 @@ func (s *SQLiteStore) List(ctx context.Context) ([]*types.TunnelSpec, error) {
 	}
 
 	return specs, nil
+}
+
+// ListByAgent returns tunnels assigned to a specific agent.
+func (s *SQLiteStore) ListByAgent(ctx context.Context, agentID string) ([]*types.TunnelSpec, error) {
+	query := `
+		SELECT id, name, owner, agent_id, desired_status, type, hops, local_port, local_bind_address,
+		       remote_host, remote_port, auto_reconnect, keep_alive, max_retries, status, created_at, updated_at
+		FROM tunnels
+		WHERE agent_id = ?
+		ORDER BY created_at DESC
+	`
+	rows, err := s.db.QueryContext(ctx, query, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list agent tunnels: %w", err)
+	}
+	defer rows.Close()
+
+	var specs []*types.TunnelSpec
+	for rows.Next() {
+		spec, err := scanTunnelRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		specs = append(specs, spec)
+	}
+	return specs, rows.Err()
+}
+
+func scanTunnelRow(rows *sql.Rows) (*types.TunnelSpec, error) {
+	var spec types.TunnelSpec
+	var hopsJSON string
+	var keepAliveSeconds int
+	var status string
+	var desired string
+
+	err := rows.Scan(
+		&spec.ID,
+		&spec.Name,
+		&spec.Owner,
+		&spec.AgentID,
+		&desired,
+		&spec.Type,
+		&hopsJSON,
+		&spec.LocalPort,
+		&spec.LocalBindAddress,
+		&spec.RemoteHost,
+		&spec.RemotePort,
+		&spec.AutoReconnect,
+		&keepAliveSeconds,
+		&spec.MaxRetries,
+		&status,
+		&spec.CreatedAt,
+		&spec.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan tunnel: %w", err)
+	}
+	if err := json.Unmarshal([]byte(hopsJSON), &spec.Hops); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal hops: %w", err)
+	}
+	spec.KeepAlive = time.Duration(keepAliveSeconds) * time.Second
+	spec.DesiredStatus = types.DesiredStatus(desired)
+	return &spec, nil
 }
 
 // Close closes the database connection

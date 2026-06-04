@@ -1,0 +1,355 @@
+openapi: 3.0.3
+info:
+  title: lazytunnel API
+  version: 1.0.0
+  description: SSH tunnel management REST API
+
+servers:
+  - url: /api/v1
+    description: API v1 (relative to host)
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Server health
+      tags: [System]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /auth/login:
+    post:
+      operationId: login
+      summary: Obtain JWT
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /tunnels:
+    get:
+      operationId: listTunnels
+      summary: List tunnels
+      tags: [Tunnels]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Tunnel list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Tunnel"
+    post:
+      operationId: createTunnel
+      summary: Create tunnel
+      tags: [Tunnels]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTunnelRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tunnel"
+
+  /tunnels/{id}:
+    get:
+      operationId: getTunnel
+      tags: [Tunnels]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TunnelId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tunnel"
+    delete:
+      operationId: deleteTunnel
+      tags: [Tunnels]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TunnelId"
+      responses:
+        "204":
+          description: Deleted
+
+  /tunnels/{id}/start:
+    post:
+      operationId: startTunnel
+      tags: [Tunnels]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TunnelId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tunnel"
+
+  /tunnels/{id}/stop:
+    post:
+      operationId: stopTunnel
+      tags: [Tunnels]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TunnelId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tunnel"
+
+  /tunnels/{id}/metrics:
+    get:
+      operationId: getTunnelMetrics
+      tags: [Tunnels]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TunnelId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TunnelMetrics"
+
+  /logs:
+    get:
+      operationId: getLogs
+      tags: [System]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: lines
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: follow
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogsResponse"
+
+  /ws:
+    get:
+      operationId: tunnelWebSocket
+      summary: Real-time tunnel updates (WebSocket)
+      tags: [System]
+      security:
+        - bearerAuth: []
+      description: Browser clients may pass ?token= JWT when Authorization header is unavailable.
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    TunnelId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid token
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
+
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        time:
+          type: string
+          format: date-time
+        version:
+          type: string
+        tunnels:
+          type: object
+          properties:
+            total:
+              type: integer
+            active:
+              type: integer
+            failed:
+              type: integer
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+
+    LoginResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        tokenType:
+          type: string
+        expiresIn:
+          type: integer
+
+    Hop:
+      type: object
+      properties:
+        host:
+          type: string
+        port:
+          type: integer
+        user:
+          type: string
+        auth_method:
+          type: string
+          enum: [key, password, agent, cert]
+
+    CreateTunnelRequest:
+      type: object
+      required: [name, type, hops, localPort, remoteHost, remotePort]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [local, remote, dynamic]
+        hops:
+          type: array
+          items:
+            $ref: "#/components/schemas/Hop"
+        localPort:
+          type: integer
+        remoteHost:
+          type: string
+        remotePort:
+          type: integer
+        autoReconnect:
+          type: boolean
+        keepAlive:
+          type: number
+        maxRetries:
+          type: integer
+
+    Tunnel:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        owner:
+          type: string
+        type:
+          type: string
+        hops:
+          type: array
+          items:
+            $ref: "#/components/schemas/Hop"
+        localPort:
+          type: integer
+        remoteHost:
+          type: string
+        remotePort:
+          type: integer
+        autoReconnect:
+          type: boolean
+        keepAlive:
+          type: number
+        maxRetries:
+          type: integer
+        status:
+          type: string
+          enum: [active, connecting, disconnected, failed, stopped]
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+        errorMessage:
+          type: string
+
+    TunnelMetrics:
+      type: object
+      properties:
+        tunnelId:
+          type: string
+        bytesIn:
+          type: integer
+        bytesOut:
+          type: integer
+        connectionsActive:
+          type: integer
+        uptime:
+          type: integer
+        lastHeartbeat:
+          type: string
+
+    LogsResponse:
+      type: object
+      properties:
+        logs:
+          type: array
+          items:
+            type: object
+
+    APIError:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        timestamp:
+          type: string

@@ -1,19 +1,22 @@
 import { useState, type ReactNode } from 'react'
-import {
-  Network,
-  Settings,
-  Activity,
-  Database,
-  Menu,
-  X
-} from 'lucide-react'
+import { Menu, LogOut } from 'lucide-react'
 import { Button } from './ui/button'
 import { CreateTunnelDialog } from './CreateTunnelDialog'
 import { ThemeToggle } from './ThemeToggle'
 import { DemoModeToggle } from './DemoModeToggle'
+import { SystemStatusBar } from './SystemStatusBar'
+import { useAuthStore } from '@/store/authStore'
 import { cn } from '@/lib/utils'
 
-export type PageType = 'tunnels' | 'monitoring' | 'metrics' | 'settings'
+export type PageType = 'tunnels' | 'topology' | 'monitoring' | 'metrics' | 'settings'
+
+const nav: { id: PageType; label: string }[] = [
+  { id: 'tunnels', label: 'Tunnels' },
+  { id: 'topology', label: 'Topology' },
+  { id: 'monitoring', label: 'Activity' },
+  { id: 'metrics', label: 'Metrics' },
+  { id: 'settings', label: 'Settings' },
+]
 
 interface LayoutProps {
   children: ReactNode
@@ -22,157 +25,82 @@ interface LayoutProps {
 }
 
 export function Layout({ children, activePage = 'tunnels', onPageChange }: LayoutProps) {
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [open, setOpen] = useState(false)
+  const logout = useAuthStore((s) => s.logout)
+  const authRequired = useAuthStore((s) => s.authRequired)
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Backdrop overlay for mobile */}
-      {sidebarOpen && (
-        <div
-          className="fixed inset-0 z-30 bg-black/50 md:hidden"
-          onClick={() => {
-            console.log('🖱️ Backdrop clicked, closing sidebar')
-            setSidebarOpen(false)
-          }}
-        />
-      )}
-
-      {/* Sidebar */}
-      <aside
-        className={cn(
-          "fixed left-0 top-0 z-40 h-screen transition-all duration-300",
-          "bg-card border-r border-border",
-          sidebarOpen ? "w-64 translate-x-0" : "w-0 -translate-x-full"
-        )}
-      >
-        <div className={cn(
-          "flex h-full flex-col overflow-hidden",
-          !sidebarOpen && "opacity-0"
-        )}>
-          {/* Logo & Toggle */}
-          <div className="flex h-16 items-center justify-between px-6 border-b border-border flex-shrink-0">
-            <button
-              onClick={() => {
-                console.log('🔄 Refreshing page')
-                window.location.reload()
-              }}
-              className="flex items-center gap-2 overflow-hidden hover:opacity-80 transition-opacity cursor-pointer"
-            >
-              <Network className="h-6 w-6 text-primary flex-shrink-0" />
-              <span className="text-xl font-bold whitespace-nowrap">lazytunnel</span>
-            </button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => {
-                console.log('🔽 Closing sidebar from X button')
-                setSidebarOpen(false)
-              }}
-              className="md:hidden flex-shrink-0"
-            >
-              <X className="h-5 w-5" />
-            </Button>
-          </div>
-
-          {/* Navigation */}
-          <nav className="flex-1 space-y-1 p-4">
-            <NavItem
-              icon={<Network />}
-              label="Tunnels"
-              active={activePage === 'tunnels'}
-              onClick={() => onPageChange?.('tunnels')}
-            />
-            <NavItem
-              icon={<Activity />}
-              label="Monitoring"
-              active={activePage === 'monitoring'}
-              onClick={() => onPageChange?.('monitoring')}
-            />
-            <NavItem
-              icon={<Database />}
-              label="Metrics"
-              active={activePage === 'metrics'}
-              onClick={() => onPageChange?.('metrics')}
-            />
-            <NavItem
-              icon={<Settings />}
-              label="Settings"
-              active={activePage === 'settings'}
-              onClick={() => onPageChange?.('settings')}
-            />
-          </nav>
-
-          {/* Footer */}
-          <div className="border-t border-border p-4">
-            <div className="text-sm text-muted-foreground">
-              <div>lazytunnel v1.0.0</div>
-              <div className="text-xs mt-1">Production SSH Manager</div>
-            </div>
-          </div>
-        </div>
-      </aside>
-
-      {/* Main Content */}
-      <div
-        className={cn(
-          "transition-all duration-300",
-          sidebarOpen ? "ml-64" : "ml-0"
-        )}
-      >
-        {/* Header */}
-        <header className="sticky top-0 z-30 flex h-16 items-center gap-4 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 px-6">
+    <div className="min-h-screen">
+      <header className="sticky top-0 z-40 border-b border-border bg-background/90 backdrop-blur-md">
+        <div className="mx-auto flex h-14 max-w-5xl items-center gap-4 px-4 md:px-6">
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => {
-              console.log('🍔 Hamburger clicked, toggling sidebar from', sidebarOpen, 'to', !sidebarOpen)
-              setSidebarOpen(!sidebarOpen)
-            }}
-            title={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+            className="md:hidden"
+            onClick={() => setOpen(!open)}
           >
-            <Menu className="h-5 w-5" />
+            <Menu className="h-4 w-4" />
           </Button>
 
-          <div className="flex flex-1 items-center justify-between">
-            <h1 className="text-2xl font-semibold">Tunnel Manager</h1>
+          <span className="font-mono text-sm font-medium tracking-tight">lazytunnel</span>
 
-            <div className="flex items-center gap-3">
-              <DemoModeToggle />
-              <ThemeToggle />
-              <CreateTunnelDialog />
-            </div>
+          <nav className="hidden flex-1 gap-1 md:flex">
+            {nav.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => onPageChange?.(item.id)}
+                className={cn(
+                  'rounded-md px-3 py-1.5 text-sm transition-colors',
+                  activePage === item.id
+                    ? 'bg-foreground text-background'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
+
+          <div className="ml-auto flex items-center gap-1">
+            <DemoModeToggle />
+            <ThemeToggle />
+            {authRequired && (
+              <Button variant="ghost" size="icon" onClick={logout} title="Sign out">
+                <LogOut className="h-4 w-4" />
+              </Button>
+            )}
+            <CreateTunnelDialog />
           </div>
-        </header>
+        </div>
 
-        {/* Page Content */}
-        <main className="container mx-auto p-6">
-          {children}
-        </main>
-      </div>
+        {open && (
+          <nav className="flex flex-col gap-1 border-t border-border px-4 py-3 md:hidden">
+            {nav.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => {
+                  onPageChange?.(item.id)
+                  setOpen(false)
+                }}
+                className={cn(
+                  'rounded-md px-3 py-2 text-left text-sm',
+                  activePage === item.id
+                    ? 'bg-foreground text-background'
+                    : 'text-muted-foreground'
+                )}
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
+        )}
+
+        <div className="mx-auto max-w-5xl px-4 md:px-6">
+          <SystemStatusBar />
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-5xl px-4 py-8 md:px-6 md:py-10">{children}</main>
     </div>
-  )
-}
-
-interface NavItemProps {
-  icon: ReactNode
-  label: string
-  active?: boolean
-  onClick?: () => void
-}
-
-function NavItem({ icon, label, active, onClick }: NavItemProps) {
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-        active
-          ? "bg-primary text-primary-foreground"
-          : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-      )}
-    >
-      <span className="h-5 w-5">{icon}</span>
-      {label}
-    </button>
   )
 }

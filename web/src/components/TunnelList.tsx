@@ -1,343 +1,170 @@
+import { useState } from 'react'
 import { useTunnels, useStartTunnel, useStopTunnel, useDeleteTunnel } from '@/lib/queries'
 import { useTunnelStore } from '@/store/tunnelStore'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
+import { PageHeader } from './PageHeader'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
-import type { TunnelSpec, TunnelStatus } from '@/types/tunnel'
-import {
-  Play,
-  Square,
-  Trash2,
-  Activity,
-  Clock,
-  AlertCircle,
-  CheckCircle2,
-  Loader2,
-  ArrowRight,
-  ExternalLink,
-} from 'lucide-react'
+import type { Tunnel, TunnelStatus } from '@/api/types'
+import { Play, Square, Trash2, Loader2, ArrowRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useState } from 'react'
 
 export function TunnelList() {
   const { isLoading, error } = useTunnels()
-  const tunnels = useTunnelStore((state) => state.tunnels)
-  const isDemoMode = useTunnelStore((state) => state.isDemoMode)
+  const tunnels = useTunnelStore((s) => s.tunnels)
+  const isDemoMode = useTunnelStore((s) => s.isDemoMode)
   const startTunnel = useStartTunnel()
   const stopTunnel = useStopTunnel()
   const deleteTunnel = useDeleteTunnel()
-
-  const [startingTunnelId, setStartingTunnelId] = useState<string | null>(null)
-  const [stoppingTunnelId, setStoppingTunnelId] = useState<string | null>(null)
-  const [deletingTunnelId, setDeletingTunnelId] = useState<string | null>(null)
-
-  console.log('🔍 TunnelList Debug:', {
-    tunnels: tunnels.length,
-    isDemoMode,
-    isLoading,
-    error: error?.message
-  })
+  const [busy, setBusy] = useState<string | null>(null)
 
   if (isLoading && tunnels.length === 0) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      <div className="flex h-48 items-center justify-center">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
       </div>
     )
   }
 
   if (error && !isDemoMode) {
     return (
-      <Card className="border-destructive">
-        <CardHeader>
-          <CardTitle className="text-destructive">Error Loading Tunnels</CardTitle>
-          <CardDescription>
-            {error instanceof Error ? error.message : 'Failed to load tunnels'}
-          </CardDescription>
-          <CardDescription className="mt-2">
-            💡 Tip: Make sure the backend server is running on port 8080, or click "Demo Mode" to see sample tunnels.
-          </CardDescription>
-        </CardHeader>
-      </Card>
+      <p className="text-sm text-destructive">
+        {error instanceof Error ? error.message : 'Could not load tunnels'}
+      </p>
     )
   }
 
-  if (!tunnels || tunnels.length === 0) {
-    console.log('📭 No tunnels to display')
+  if (tunnels.length === 0) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>No Tunnels</CardTitle>
-          <CardDescription>
-            Create your first tunnel to get started, or click "Demo Mode" to see sample tunnels
-          </CardDescription>
-        </CardHeader>
-      </Card>
+      <>
+        <PageHeader title="Tunnels" description="No tunnels yet." />
+        <p className="text-sm text-muted-foreground">
+          Create one with + New, or try demo mode.
+        </p>
+      </>
     )
   }
 
-  console.log('✅ Displaying', tunnels.length, 'tunnels')
+  const active = tunnels.filter((t) => t.status === 'active').length
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-3xl font-bold tracking-tight">Active Tunnels</h2>
-          <p className="text-muted-foreground">
-            Manage your SSH port forwards
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Badge variant="secondary" className="text-sm">
-            {tunnels.filter(t => t.status === 'active').length} Active
-          </Badge>
-          <Badge variant="outline" className="text-sm">
-            {tunnels.length} Total
-          </Badge>
-        </div>
-      </div>
+    <>
+      <PageHeader
+        title="Tunnels"
+        description={`${active} of ${tunnels.length} active`}
+      />
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {[...tunnels].sort((a, b) => a.name.localeCompare(b.name)).map((tunnel) => (
-          <TunnelCard
-            key={tunnel.id}
-            tunnel={tunnel}
-            onStart={() => {
-              console.log('🎬 START clicked for:', tunnel.name, tunnel.id)
-              setStartingTunnelId(tunnel.id)
-              startTunnel.mutate(tunnel.id, {
-                onSettled: () => {
-                  console.log('🏁 START settled for:', tunnel.id)
-                  setStartingTunnelId(null)
-                }
-              })
-            }}
-            onStop={() => {
-              console.log('🎬 STOP clicked for:', tunnel.name, tunnel.id)
-              setStoppingTunnelId(tunnel.id)
-              stopTunnel.mutate(tunnel.id, {
-                onSettled: () => {
-                  console.log('🏁 STOP settled for:', tunnel.id)
-                  setStoppingTunnelId(null)
-                }
-              })
-            }}
-            onDelete={() => {
-              console.log('🎬 DELETE clicked for:', tunnel.name, tunnel.id)
-              setDeletingTunnelId(tunnel.id)
-              deleteTunnel.mutate(tunnel.id, {
-                onSettled: () => {
-                  console.log('🏁 DELETE settled for:', tunnel.id)
-                  setDeletingTunnelId(null)
-                }
-              })
-            }}
-            isStarting={startingTunnelId === tunnel.id}
-            isStopping={stoppingTunnelId === tunnel.id}
-            isDeleting={deletingTunnelId === tunnel.id}
-          />
-        ))}
-      </div>
-    </div>
+      <ul className="divide-y divide-border border-t border-border">
+        {[...tunnels]
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map((tunnel) => (
+            <TunnelRow
+              key={tunnel.id}
+              tunnel={tunnel}
+              busy={busy === tunnel.id}
+              onStart={() => {
+                setBusy(tunnel.id)
+                startTunnel.mutate(tunnel.id, { onSettled: () => setBusy(null) })
+              }}
+              onStop={() => {
+                setBusy(tunnel.id)
+                stopTunnel.mutate(tunnel.id, { onSettled: () => setBusy(null) })
+              }}
+              onDelete={() => {
+                setBusy(tunnel.id)
+                deleteTunnel.mutate(tunnel.id, { onSettled: () => setBusy(null) })
+              }}
+            />
+          ))}
+      </ul>
+    </>
   )
 }
 
-interface TunnelCardProps {
-  tunnel: TunnelSpec
-  onStart: () => void
-  onStop: () => void
-  onDelete: () => void
-  isStarting: boolean
-  isStopping: boolean
-  isDeleting: boolean
-}
-
-function TunnelCard({
+function TunnelRow({
   tunnel,
+  busy,
   onStart,
   onStop,
   onDelete,
-  isStarting,
-  isStopping,
-  isDeleting,
-}: TunnelCardProps) {
-  const statusConfig = getStatusConfig(tunnel.status)
+}: {
+  tunnel: Tunnel
+  busy: boolean
+  onStart: () => void
+  onStop: () => void
+  onDelete: () => void
+}) {
+  const status = statusLabel(tunnel.status)
 
   return (
-    <Card className={cn(
-      "transition-all hover:shadow-lg",
-      tunnel.status === 'active' && "border-green-500/50"
-    )}>
-      <CardHeader className="pb-3">
-        <div className="flex items-start justify-between">
-          <div className="flex-1">
-            <CardTitle className="flex items-center gap-2">
-              {tunnel.name}
-              <Badge
-                variant={statusConfig.variant}
-                className="ml-auto"
-              >
-                <statusConfig.icon className="mr-1 h-3 w-3" />
-                {statusConfig.label}
-              </Badge>
-            </CardTitle>
-            <CardDescription className="mt-1">
-              {tunnel.type.toUpperCase()} • Port {tunnel.localPort}
-            </CardDescription>
-          </div>
-        </div>
-      </CardHeader>
-
-      <CardContent className="space-y-3">
-        {/* Connection Path */}
-        <div className="space-y-2">
-          <div className="text-xs font-medium text-muted-foreground">
-            Connection Path
-          </div>
-          <div className="flex items-center gap-2 text-sm">
-            <a
-              href={`http://localhost:${tunnel.localPort}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className={cn(
-                "rounded bg-muted px-2 py-1 inline-flex items-center gap-1 transition-colors",
-                tunnel.status === 'active'
-                  ? "hover:bg-primary hover:text-primary-foreground cursor-pointer"
-                  : "opacity-50 cursor-not-allowed pointer-events-none"
-              )}
-              onClick={(e) => {
-                if (tunnel.status !== 'active') {
-                  e.preventDefault()
-                }
-              }}
-            >
-              <code>localhost:{tunnel.localPort}</code>
-              {tunnel.status === 'active' && (
-                <ExternalLink className="h-3 w-3" />
-              )}
-            </a>
-            <ArrowRight className="h-3 w-3 text-muted-foreground" />
-            <code className="rounded bg-muted px-2 py-1 truncate">
-              {tunnel.remoteHost}:{tunnel.remotePort}
-            </code>
-          </div>
-        </div>
-
-        {/* Hops */}
-        {tunnel.hops.length > 0 && (
-          <div className="space-y-1">
-            <div className="text-xs font-medium text-muted-foreground">
-              Via {tunnel.hops.length} hop{tunnel.hops.length > 1 ? 's' : ''}
-            </div>
-            <div className="flex flex-wrap gap-1">
-              {tunnel.hops.map((hop, i) => (
-                <Badge key={i} variant="outline" className="text-xs">
-                  {hop.user}@{hop.host}
-                </Badge>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Error Message */}
-        {tunnel.errorMessage && (
-          <div className="rounded-md bg-destructive/10 p-2 text-xs text-destructive">
-            {tunnel.errorMessage}
-          </div>
-        )}
-
-        {/* Actions */}
-        <div className="flex gap-2 pt-2">
-          {tunnel.status === 'active' ? (
-            <Button
-              variant="outline"
-              size="sm"
-              className="flex-1"
-              onClick={onStop}
-              disabled={isStopping}
-            >
-              {isStopping ? (
-                <Loader2 className="mr-2 h-3 w-3 animate-spin" />
-              ) : (
-                <Square className="mr-2 h-3 w-3" />
-              )}
-              {isStopping ? "Stopping..." : "Stop"}
-            </Button>
-          ) : tunnel.status === 'connecting' || isStarting ? (
-            <Button
-              size="sm"
-              className="flex-1"
-              disabled={true}
-            >
-              <Loader2 className="mr-2 h-3 w-3 animate-spin" />
-              Connecting...
-            </Button>
-          ) : (
-            <Button
-              size="sm"
-              className="flex-1"
-              onClick={onStart}
-              disabled={isStarting}
-            >
-              <Play className="mr-2 h-3 w-3" />
-              Start
-            </Button>
-          )}
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onDelete}
-            disabled={isDeleting}
+    <li
+      className={cn(
+        'flex flex-col gap-4 py-5 sm:flex-row sm:items-center sm:justify-between',
+        tunnel.status === 'active' && 'bg-primary/[0.03]'
+      )}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-3">
+          <span className="font-medium">{tunnel.name}</span>
+          <Badge
+            variant={status.variant}
+            className="font-mono text-[10px] font-normal uppercase tracking-wider"
           >
-            {isDeleting ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Trash2 className="h-4 w-4 text-destructive" />
-            )}
-          </Button>
+            {status.label}
+          </Badge>
         </div>
-      </CardContent>
-    </Card>
+        <p className="mt-2 flex flex-wrap items-center gap-2 font-mono text-xs text-muted-foreground">
+          <span>:{tunnel.localPort}</span>
+          <ArrowRight className="h-3 w-3" />
+          <span>
+            {tunnel.remoteHost}:{tunnel.remotePort}
+          </span>
+          {tunnel.agentId && (
+            <span className="text-muted-foreground/70">agent {tunnel.agentId}</span>
+          )}
+          {tunnel.hops[0] && (
+            <span className="text-muted-foreground/70">
+              via {tunnel.hops[0].user}@{tunnel.hops[0].host}
+            </span>
+          )}
+        </p>
+        {tunnel.errorMessage && (
+          <p className="mt-2 text-xs text-destructive">{tunnel.errorMessage}</p>
+        )}
+      </div>
+
+      <div className="flex shrink-0 gap-2">
+        {tunnel.status === 'active' ? (
+          <Button variant="outline" size="sm" onClick={onStop} disabled={busy}>
+            {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Square className="h-3 w-3" />}
+            <span className="ml-1.5">Stop</span>
+          </Button>
+        ) : (
+          <Button size="sm" onClick={onStart} disabled={busy || tunnel.status === 'connecting'}>
+            {busy || tunnel.status === 'connecting' ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Play className="h-3 w-3" />
+            )}
+            <span className="ml-1.5">Start</span>
+          </Button>
+        )}
+        <Button variant="ghost" size="sm" onClick={onDelete} disabled={busy}>
+          <Trash2 className="h-3 w-3 text-muted-foreground" />
+        </Button>
+      </div>
+    </li>
   )
 }
 
-function getStatusConfig(status: TunnelStatus) {
+function statusLabel(status: TunnelStatus) {
   switch (status) {
     case 'active':
-      return {
-        label: 'Active',
-        variant: 'success' as const,
-        icon: CheckCircle2,
-      }
+      return { label: 'live', variant: 'success' as const }
     case 'connecting':
-      return {
-        label: 'Connecting',
-        variant: 'warning' as const,
-        icon: Clock,
-      }
-    case 'stopped':
-      return {
-        label: 'Stopped',
-        variant: 'secondary' as const,
-        icon: Square,
-      }
-    case 'disconnected':
-      return {
-        label: 'Disconnected',
-        variant: 'secondary' as const,
-        icon: AlertCircle,
-      }
+      return { label: 'connecting', variant: 'warning' as const }
     case 'failed':
-      return {
-        label: 'Failed',
-        variant: 'destructive' as const,
-        icon: AlertCircle,
-      }
+      return { label: 'failed', variant: 'destructive' as const }
     default:
-      return {
-        label: 'Unknown',
-        variant: 'outline' as const,
-        icon: Activity,
-      }
+      return { label: status, variant: 'secondary' as const }
   }
 }

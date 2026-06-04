@@ -1,0 +1,35 @@
+[Unit]
+Description=LazyTunnel Web Frontend
+Documentation=https://github.com/craigderington/lazytunnel
+After=network-online.target lazytunnel-backend@%i.service
+Wants=network-online.target
+Requires=lazytunnel-backend@%i.service
+
+[Service]
+Type=simple
+User=%I
+Group=%I
+WorkingDirectory=/home/%I/Work/lazytunnel/web
+ExecStart=/home/%I/.local/share/mise/installs/node/25.2.1/bin/npm run dev -- --host --port 5173
+Restart=on-failure
+RestartSec=5s
+StartLimitInterval=60s
+StartLimitBurst=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lazytunnel-frontend
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/%I/Work/lazytunnel/web
+
+# Environment
+Environment="PATH=/home/%I/.local/share/mise/installs/node/25.2.1/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="NODE_ENV=development"
+Environment="VITE_API_URL=http://localhost:8080/api/v1"
+
+[Install]
+WantedBy=multi-user.target

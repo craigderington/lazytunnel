@@ -1,0 +1,37 @@
+[Unit]
+Description=LazyTunnel (backend + frontend)
+Documentation=https://github.com/craigderington/lazytunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cd
+Group=cd
+WorkingDirectory=/home/cd/Work/lazytunnel
+ExecStart=/home/cd/Work/lazytunnel/deployments/systemd/lazytunnel-start.sh
+Restart=on-failure
+RestartSec=5s
+StartLimitInterval=60s
+StartLimitBurst=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lazytunnel
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/cd/Work/lazytunnel /home/cd/Work/lazytunnel/web
+
+# Environment
+Environment="PATH=/home/cd/.local/share/mise/installs/node/25.2.1/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="LAZYTUNNEL_ROOT=/home/cd/Work/lazytunnel"
+Environment="LAZYTUNNEL_DB_PATH=/home/cd/Work/lazytunnel/tunnels.db"
+Environment="NODE_ENV=development"
+Environment="VITE_API_URL=http://localhost:8080/api/v1"
+EnvironmentFile=-/etc/default/lazytunnel
+
+[Install]
+WantedBy=multi-user.target

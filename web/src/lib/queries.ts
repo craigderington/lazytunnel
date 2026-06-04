@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { apiClient } from './api'
+import { api } from '@/api/client'
 import type { CreateTunnelRequest } from '@/types/tunnel'
 import { useTunnelStore } from '@/store/tunnelStore'
 
@@ -20,7 +20,7 @@ export function useTunnels() {
 
   const query = useQuery({
     queryKey: tunnelKeys.lists(),
-    queryFn: apiClient.getTunnels.bind(apiClient),
+    queryFn: () => api.listTunnels(),
     refetchInterval: 5000, // Refetch every 5 seconds for real-time updates
     retry: false, // Don't retry on error (avoid spam when server is down)
     enabled: !isDemoMode, // Don't fetch from API when in demo mode
@@ -37,7 +37,7 @@ export function useTunnels() {
 export function useTunnel(id: string) {
   return useQuery({
     queryKey: tunnelKeys.detail(id),
-    queryFn: () => apiClient.getTunnel(id),
+    queryFn: () => api.getTunnel(id),
     enabled: !!id,
   })
 }
@@ -45,9 +45,32 @@ export function useTunnel(id: string) {
 export function useTunnelMetrics(id: string) {
   return useQuery({
     queryKey: tunnelKeys.metrics(id),
-    queryFn: () => apiClient.getTunnelMetrics(id),
+    queryFn: () => api.getTunnelMetrics(id),
     enabled: !!id,
     refetchInterval: 2000, // Metrics update more frequently
+  })
+}
+
+/** Polls /tunnels/{id}/metrics for each active tunnel. */
+export function useActiveTunnelMetrics(activeIds: string[], enabled = true) {
+  const isDemoMode = useTunnelStore((state) => state.isDemoMode)
+
+  return useQuery({
+    queryKey: [...tunnelKeys.all, 'metrics-batch', activeIds] as const,
+    queryFn: async () => {
+      const results = await Promise.all(
+        activeIds.map(async (id) => {
+          try {
+            return await api.getTunnelMetrics(id)
+          } catch {
+            return null
+          }
+        })
+      )
+      return results.filter((m): m is NonNullable<typeof m> => m != null)
+    },
+    enabled: enabled && !isDemoMode && activeIds.length > 0,
+    refetchInterval: 2000,
   })
 }
 
@@ -57,7 +80,7 @@ export function useCreateTunnel() {
   const addTunnel = useTunnelStore((state) => state.addTunnel)
 
   return useMutation({
-    mutationFn: (data: CreateTunnelRequest) => apiClient.createTunnel(data),
+    mutationFn: (data: CreateTunnelRequest) => api.createTunnel(data),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: tunnelKeys.lists() })
       addTunnel(data)
@@ -70,7 +93,7 @@ export function useDeleteTunnel() {
   const removeTunnel = useTunnelStore((state) => state.removeTunnel)
 
   return useMutation({
-    mutationFn: (id: string) => apiClient.deleteTunnel(id),
+    mutationFn: (id: string) => api.deleteTunnel(id),
     onSuccess: (_, id) => {
       queryClient.invalidateQueries({ queryKey: tunnelKeys.lists() })
       removeTunnel(id)
@@ -86,8 +109,6 @@ export function useStartTunnel() {
 
   return useMutation({
     mutationFn: async (id: string) => {
-      console.log('🚀 Starting tunnel:', id)
-
       // Add minimum delay for smooth animation
       const [result] = await Promise.all([
         (async () => {
@@ -101,7 +122,7 @@ export function useStartTunnel() {
               lastConnected: new Date().toISOString(),
             }
           }
-          return apiClient.startTunnel(id)
+          return api.startTunnel(id)
         })(),
         new Promise(resolve => setTimeout(resolve, 800)) // Minimum 800ms for animation
       ])
@@ -109,7 +130,6 @@ export function useStartTunnel() {
       return result
     },
     onSuccess: (data) => {
-      console.log('✅ Tunnel started:', data.id)
       if (!isDemoMode) {
         queryClient.invalidateQueries({ queryKey: tunnelKeys.detail(data.id) })
       }
@@ -126,8 +146,6 @@ export function useStopTunnel() {
 
   return useMutation({
     mutationFn: async (id: string) => {
-      console.log('🛑 Stopping tunnel:', id)
-
       // Add minimum delay for smooth animation
       const [result] = await Promise.all([
         (async () => {
@@ -140,7 +158,7 @@ export function useStopTunnel() {
               updatedAt: new Date().toISOString(),
             }
           }
-          return apiClient.stopTunnel(id)
+          return api.stopTunnel(id)
         })(),
         new Promise(resolve => setTimeout(resolve, 800)) // Minimum 800ms for animation
       ])
@@ -148,7 +166,6 @@ export function useStopTunnel() {
       return result
     },
     onSuccess: (data) => {
-      console.log('⏹️ Tunnel stopped:', data.id)
       if (!isDemoMode) {
         queryClient.invalidateQueries({ queryKey: tunnelKeys.detail(data.id) })
       }

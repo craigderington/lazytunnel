@@ -98,8 +98,13 @@ func (am *AuthMiddleware) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-// extractToken extracts the JWT token from the Authorization header
+// extractToken extracts the JWT token from the Authorization header or ?token= query param.
+// Query param support is required for browser WebSocket connections.
 func (am *AuthMiddleware) extractToken(r *http.Request) string {
+	if token := r.URL.Query().Get("token"); token != "" {
+		return token
+	}
+
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
 		return ""

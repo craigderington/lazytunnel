@@ -12,25 +12,40 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/craigderington/lazytunnel/internal/api"
+	"github.com/craigderington/lazytunnel/internal/config"
 	"github.com/craigderington/lazytunnel/internal/storage"
 )
 
-var (
-	version   = "dev"
-	addr      = flag.String("addr", ":8080", "HTTP server address")
-	debug     = flag.Bool("debug", false, "Enable debug logging")
-	dbPath    = flag.String("db", "tunnels.db", "Path to SQLite database file")
-	jwtSecret = flag.String("jwt-secret", "", "JWT secret for API authentication (or set LAZYTUNNEL_JWT_SECRET env var)")
-	tlsCert   = flag.String("tls-cert", "", "Path to TLS certificate file")
-	tlsKey    = flag.String("tls-key", "", "Path to TLS key file")
-)
+var version = "dev"
 
 func main() {
+	configPath := flag.String("config", "", "Path to config.yaml")
+	addr := flag.String("addr", "", "HTTP listen address (overrides config)")
+	debug := flag.Bool("debug", false, "Enable debug logging (overrides config)")
+	dbPath := flag.String("db", "", "SQLite database path (overrides config)")
+	jwtSecret := flag.String("jwt-secret", "", "JWT secret (overrides config)")
+	tlsCert := flag.String("tls-cert", "", "TLS certificate file")
+	tlsKey := flag.String("tls-key", "", "TLS key file")
 	flag.Parse()
 
-	// Setup logging
-	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	overrides := map[string]interface{}{
+		"server.addr":      *addr,
+		"database.path":    *dbPath,
+		"auth.jwt_secret":  *jwtSecret,
+		"server.tls_cert":  *tlsCert,
+		"server.tls_key":   *tlsKey,
+	}
 	if *debug {
+		overrides["logging.level"] = "debug"
+	}
+
+	cfg, err := config.Load(*configPath, overrides)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to load configuration")
+	}
+
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	if cfg.DebugEnabled() {
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
 		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339})
 	} else {
@@ -39,59 +54,45 @@ func main() {
 
 	log.Info().
 		Str("version", version).
-		Str("addr", *addr).
+		Str("addr", cfg.Server.Addr).
 		Msg("Starting lazytunnel server")
 
-	// Create context that cancels on interrupt
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Initialize persistent storage
-	store, err := storage.NewSQLiteStore(*dbPath)
+	store, err := storage.NewSQLiteStore(cfg.Database.Path)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize storage")
 	}
 	defer store.Close()
 
-	log.Info().Str("db_path", *dbPath).Msg("Initialized SQLite storage")
+	log.Info().Str("db_path", cfg.Database.Path).Msg("Initialized SQLite storage")
 
-	// Initialize authentication if JWT secret is configured
 	var auth *api.AuthMiddleware
-	jwtSecretValue := *jwtSecret
-	if jwtSecretValue == "" {
-		jwtSecretValue = os.Getenv("LAZYTUNNEL_JWT_SECRET")
-	}
-
-	if jwtSecretValue != "" {
-		auth = api.NewAuthMiddleware(jwtSecretValue, 24*time.Hour)
+	if cfg.Auth.JWTSecret != "" {
+		auth = api.NewAuthMiddleware(cfg.Auth.JWTSecret, cfg.Auth.TokenExpiration)
 		log.Info().Msg("Authentication enabled with JWT")
 	} else {
 		log.Warn().Msg("No JWT secret configured - API will run without authentication")
 	}
 
-	// Setup TLS configuration if certificates are provided
 	var tlsConfig *api.TLSConfig
-	if *tlsCert != "" && *tlsKey != "" {
+	if cfg.Server.TLSCert != "" && cfg.Server.TLSKey != "" {
 		tlsConfig = &api.TLSConfig{
-			CertFile: *tlsCert,
-			KeyFile:  *tlsKey,
+			CertFile: cfg.Server.TLSCert,
+			KeyFile:  cfg.Server.TLSKey,
 		}
-		log.Info().
-			Str("cert", *tlsCert).
-			Str("key", *tlsKey).
-			Msg("TLS enabled")
+		log.Info().Str("cert", cfg.Server.TLSCert).Msg("TLS enabled")
 	}
 
-	// Create API server
 	server := api.NewServer(ctx, api.Config{
-		Addr:    *addr,
+		Addr:    cfg.Server.Addr,
 		Logger:  log.Logger,
 		Storage: store,
 		Auth:    auth,
 		TLS:     tlsConfig,
 	})
 
-	// Start server in goroutine
 	go func() {
 		var err error
 		if tlsConfig != nil {
@@ -105,22 +106,14 @@ func main() {
 	}()
 
 	log.Info().Msg("Server started successfully")
-	if tlsConfig != nil {
-		log.Info().Msgf("API available at https://localhost%s/api/v1", *addr)
-		log.Info().Msgf("Health check: https://localhost%s/api/v1/health", *addr)
-	} else {
-		log.Info().Msgf("API available at http://localhost%s/api/v1", *addr)
-		log.Info().Msgf("Health check: http://localhost%s/api/v1/health", *addr)
-	}
+	log.Info().Str("openapi", "http://localhost"+cfg.Server.Addr+"/api/v1/openapi.yaml").Msg("API documentation")
 
-	// Wait for interrupt signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	<-sigChan
 
 	log.Info().Msg("Received shutdown signal")
 
-	// Graceful shutdown with timeout
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 

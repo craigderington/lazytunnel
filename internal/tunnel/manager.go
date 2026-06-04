@@ -13,9 +13,11 @@ import (
 type Storage interface {
 	Save(ctx context.Context, spec *types.TunnelSpec) error
 	UpdateStatus(ctx context.Context, tunnelID, status string) error
+	UpdateDesiredStatus(ctx context.Context, tunnelID string, status types.DesiredStatus) error
 	Delete(ctx context.Context, tunnelID string) error
 	Get(ctx context.Context, tunnelID string) (*types.TunnelSpec, error)
 	List(ctx context.Context) ([]*types.TunnelSpec, error)
+	ListByAgent(ctx context.Context, agentID string) ([]*types.TunnelSpec, error)
 	Close() error
 }
 
@@ -27,6 +29,7 @@ type Manager struct {
 	tunnels        map[string]*Tunnel
 	mu             sync.RWMutex
 	ctx            context.Context
+	nodeAgentID    string                // non-empty on data-plane agents
 	storage        Storage               // Optional persistent storage
 	statusCallback StatusCallback        // Optional callback for status changes
 	circuitBreaker *TunnelCircuitBreaker // Circuit breaker for tunnel connections
@@ -59,6 +62,13 @@ func (m *Manager) SetStorage(storage Storage) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.storage = storage
+}
+
+// SetNodeAgentID configures this manager as a data-plane agent (runs SSH for matching agent_id).
+func (m *Manager) SetNodeAgentID(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nodeAgentID = id
 }
 
 // SetStatusCallback sets a callback function that is invoked when tunnel status changes
@@ -102,6 +112,24 @@ func (m *Manager) LoadFromStorage(ctx context.Context) error {
 	return nil
 }
 
+// RestoreDesired reconnects tunnels that should run on this node with desired_status=active.
+func (m *Manager) RestoreDesired(ctx context.Context) {
+	tunnels := m.List()
+	for _, t := range tunnels {
+		if !m.runOnThisNode(t.Spec.AgentID) {
+			continue
+		}
+		if t.Spec.DesiredStatus != types.DesiredStatusActive {
+			continue
+		}
+		st := t.GetStatus()
+		if st != nil && st.State == types.TunnelStateActive {
+			continue
+		}
+		_ = m.Start(ctx, t.Spec.ID)
+	}
+}
+
 // Create creates and starts a new tunnel asynchronously
 func (m *Manager) Create(ctx context.Context, spec *types.TunnelSpec) error {
 	m.mu.Lock()
@@ -134,14 +162,43 @@ func (m *Manager) Create(ctx context.Context, spec *types.TunnelSpec) error {
 	// Store the tunnel immediately
 	m.tunnels[spec.ID] = tunnel
 
-	// Start connection in background
-	go m.connectTunnel(tunnel)
+	// Remote agents reconcile desired state; only connect on this node when appropriate.
+	if RunOnThisNode(m.nodeAgentID, spec.AgentID) {
+		go m.connectTunnel(tunnel)
+	} else {
+		tunnel.updateStatus(types.TunnelStateStopped, "")
+	}
 
 	return nil
 }
 
+// IsLocalAgent returns true when the tunnel should run on the API server (control plane).
+func IsLocalAgent(agentID string) bool {
+	return RunOnThisNode("", agentID)
+}
+
+// RunOnThisNode returns true if this process should establish SSH for the tunnel.
+func RunOnThisNode(nodeAgentID, tunnelAgentID string) bool {
+	if nodeAgentID != "" {
+		return tunnelAgentID == nodeAgentID
+	}
+	return tunnelAgentID == "" || tunnelAgentID == "local"
+}
+
+func (m *Manager) runOnThisNode(tunnelAgentID string) bool {
+	m.mu.RLock()
+	nodeID := m.nodeAgentID
+	m.mu.RUnlock()
+	return RunOnThisNode(nodeID, tunnelAgentID)
+}
+
 // connectTunnel establishes the SSH connection and starts forwarding in a goroutine
 func (m *Manager) connectTunnel(tunnel *Tunnel) {
+	if !m.runOnThisNode(tunnel.Spec.AgentID) {
+		tunnel.updateStatus(types.TunnelStatePending, "delegated to agent "+tunnel.Spec.AgentID)
+		return
+	}
+
 	// Get or create circuit breaker for this tunnel
 	breaker := m.circuitBreaker.GetBreaker(tunnel.Spec.ID)
 
@@ -491,6 +548,11 @@ func (t *Tunnel) cleanup() error {
 		return t.multiSession.Close()
 	}
 	return nil
+}
+
+// UpdateStatus updates tunnel state (used by control plane / agents).
+func (t *Tunnel) UpdateStatus(state types.TunnelState, errorMsg string) {
+	t.updateStatus(state, errorMsg)
 }
 
 // updateStatus updates the tunnel status

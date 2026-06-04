@@ -38,6 +38,7 @@ const tunnelSchema = z.object({
   bastionIdentityFile: z.string().optional(),
 
   autoReconnect: z.boolean(),
+  agentId: z.string().optional(),
 })
 
 type TunnelFormData = z.infer<typeof tunnelSchema>
@@ -110,6 +111,7 @@ export function CreateTunnelDialog() {
         autoReconnect: data.autoReconnect,
         keepAlive: 30,
         maxRetries: 5,
+        agentId: data.agentId?.trim() || undefined,
       }
 
       console.log('🚀 Sending create tunnel request:', payload)
@@ -174,6 +176,19 @@ export function CreateTunnelDialog() {
               {errors.name && (
                 <p className="text-sm text-destructive">{errors.name.message}</p>
               )}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="agentId">Agent (optional)</Label>
+              <Input
+                id="agentId"
+                placeholder="hostname — leave empty for this server"
+                className="font-mono text-sm"
+                {...register('agentId')}
+              />
+              <p className="text-xs text-muted-foreground">
+                Run <span className="font-mono">lazytunnel-agent --id &lt;name&gt;</span> on the target host
+              </p>
             </div>
 
             <div className="space-y-2">

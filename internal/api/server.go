@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog"
 
+	"github.com/craigderington/lazytunnel/internal/agent"
 	"github.com/craigderington/lazytunnel/internal/tunnel"
 	"github.com/craigderington/lazytunnel/pkg/types"
 )
@@ -25,6 +27,9 @@ type Server struct {
 	auth        *AuthMiddleware
 	rateLimiter *RateLimiter
 	wsManager   *WebSocketManager
+	storage     tunnel.Storage
+	agents      *agent.Registry
+	coordinator *agent.Coordinator
 }
 
 // TLSConfig holds TLS configuration
@@ -57,6 +62,7 @@ func NewServer(ctx context.Context, config Config) *Server {
 			config.Logger.Error().Err(err).Msg("Failed to load tunnels from storage")
 		} else {
 			config.Logger.Info().Msg("Loaded tunnels from persistent storage")
+			go manager.RestoreDesired(ctx)
 		}
 	}
 
@@ -72,6 +78,12 @@ func NewServer(ctx context.Context, config Config) *Server {
 		wsManager.BroadcastTunnelUpdate(tunnelID, status)
 	})
 
+	registry := agent.NewRegistry()
+	var coord *agent.Coordinator
+	if config.Storage != nil {
+		coord = agent.NewCoordinator(manager, config.Storage, registry)
+	}
+
 	s := &Server{
 		addr:        config.Addr,
 		manager:     manager,
@@ -81,6 +93,9 @@ func NewServer(ctx context.Context, config Config) *Server {
 		auth:        config.Auth,
 		rateLimiter: config.RateLimiter,
 		wsManager:   wsManager,
+		storage:     config.Storage,
+		agents:      registry,
+		coordinator: coord,
 	}
 
 	s.setupRoutes()
@@ -110,11 +125,25 @@ func (s *Server) setupRoutes() {
 	// Health check (public)
 	api.HandleFunc("/health", s.handleHealth).Methods("GET", "OPTIONS")
 
+	// OpenAPI specification (public)
+	api.HandleFunc("/openapi.yaml", s.handleOpenAPI).Methods("GET", "OPTIONS")
+
 	// Metrics endpoint (public - for Prometheus scraping)
 	api.Handle("/metrics", HandleMetrics()).Methods("GET", "OPTIONS")
 
 	// Authentication routes (public)
 	api.HandleFunc("/auth/login", s.handleLogin).Methods("POST", "OPTIONS")
+
+	// Agent routes (protected) — data-plane registration & sync
+	protectedAgents := api.PathPrefix("/agents").Subrouter()
+	if s.auth != nil {
+		protectedAgents.Use(s.auth.Middleware)
+	}
+	protectedAgents.HandleFunc("", s.handleListAgents).Methods("GET", "OPTIONS")
+	protectedAgents.HandleFunc("/register", s.handleRegisterAgent).Methods("POST", "OPTIONS")
+	protectedAgents.HandleFunc("/{id}/heartbeat", s.handleAgentHeartbeat).Methods("POST", "OPTIONS")
+	protectedAgents.HandleFunc("/{id}/assignments", s.handleAgentAssignments).Methods("GET", "OPTIONS")
+	protectedAgents.HandleFunc("/{id}/report", s.handleAgentReport).Methods("POST", "OPTIONS")
 
 	// Protected routes (require authentication)
 	protected := api.PathPrefix("/").Subrouter()
@@ -247,4 +276,17 @@ func (s *Server) respondError(w http.ResponseWriter, status int, message string)
 	s.respondJSON(w, status, map[string]string{
 		"error": message,
 	})
+}
+
+// handleOpenAPI serves the OpenAPI specification.
+func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
+	data, err := os.ReadFile("api/openapi.yaml")
+	if err != nil {
+		s.logger.Error().Err(err).Msg("Failed to read OpenAPI spec")
+		s.respondError(w, http.StatusInternalServerError, "OpenAPI spec unavailable")
+		return
+	}
+	w.Header().Set("Content-Type", "application/yaml")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }

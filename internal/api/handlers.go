@@ -82,6 +82,8 @@ func (s *Server) handleListTunnels(w http.ResponseWriter, r *http.Request) {
 			"id":               t.Spec.ID,
 			"name":             t.Spec.Name,
 			"owner":            t.Spec.Owner,
+			"agentId":          t.Spec.AgentID,
+			"desiredStatus":    string(t.Spec.DesiredStatus),
 			"type":             t.Spec.Type,
 			"hops":             t.Spec.Hops,
 			"localPort":        t.Spec.LocalPort,
@@ -141,6 +143,7 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 		AutoReconnect:    req.AutoReconnect,
 		KeepAlive:        time.Duration(req.KeepAlive) * time.Second,
 		MaxRetries:       req.MaxRetries,
+		AgentID:          req.AgentID,
 		CreatedAt:        time.Now(),
 		UpdatedAt:        time.Now(),
 	}
@@ -173,6 +176,8 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 		"id":               spec.ID,
 		"name":             spec.Name,
 		"owner":            spec.Owner,
+		"agentId":          spec.AgentID,
+		"desiredStatus":    string(spec.DesiredStatus),
 		"type":             spec.Type,
 		"hops":             spec.Hops,
 		"localPort":        spec.LocalPort,
@@ -284,7 +289,11 @@ func (s *Server) handleStartTunnel(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	tunnelID := vars["id"]
 
-	if err := s.manager.Start(r.Context(), tunnelID); err != nil {
+	startFn := s.manager.Start
+	if s.coordinator != nil {
+		startFn = s.coordinator.Start
+	}
+	if err := startFn(r.Context(), tunnelID); err != nil {
 		s.logger.Error().Err(err).Str("tunnel_id", tunnelID).Msg("Failed to start tunnel")
 		s.TunnelConnectionError(w, tunnelID, err.Error())
 		return
@@ -323,7 +332,11 @@ func (s *Server) handleStopTunnel(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	tunnelID := vars["id"]
 
-	if err := s.manager.Stop(r.Context(), tunnelID); err != nil {
+	stopFn := s.manager.Stop
+	if s.coordinator != nil {
+		stopFn = s.coordinator.Stop
+	}
+	if err := stopFn(r.Context(), tunnelID); err != nil {
 		s.logger.Error().Err(err).Str("tunnel_id", tunnelID).Msg("Failed to stop tunnel")
 		s.InternalError(w, "Failed to stop tunnel")
 		return
@@ -401,7 +414,7 @@ func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 
 	// Build journalctl command
 	args := []string{
-		"-u", "lazytunnel-server.service",
+		"-u", "lazytunnel.service",
 		"-n", lines,
 		"--no-pager",
 		"-o", "json",

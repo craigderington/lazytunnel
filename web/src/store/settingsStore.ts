@@ -18,7 +18,7 @@ interface SettingsStore {
 }
 
 const defaultSettings: Settings = {
-  apiBaseUrl: import.meta.env.VITE_API_URL || 'http://localhost:8080/api/v1',
+  apiBaseUrl: import.meta.env.VITE_API_URL || '/api/v1',
   autoRefreshInterval: 5,
   enableNotifications: true,
   enableSounds: false,

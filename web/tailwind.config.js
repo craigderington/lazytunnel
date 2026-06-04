@@ -17,7 +17,16 @@ export default {
       },
     },
     extend: {
+      fontFamily: {
+        sans: ['"IBM Plex Sans"', 'system-ui', 'sans-serif'],
+        mono: ['"IBM Plex Mono"', 'ui-monospace', 'monospace'],
+      },
       colors: {
+        live: 'hsl(var(--live))',
+        button: {
+          DEFAULT: 'hsl(var(--button))',
+          foreground: 'hsl(var(--button-foreground))',
+        },
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",

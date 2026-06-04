@@ -229,3 +229,22 @@ func TestTunnelStatusUpdate(t *testing.T) {
 		t.Errorf("Expected error message, got %s", status.LastError)
 	}
 }
+
+func TestRunOnThisNode(t *testing.T) {
+	tests := []struct {
+		node, tunnel string
+		want         bool
+	}{
+		{"", "", true},
+		{"", "local", true},
+		{"", "edge-1", false},
+		{"edge-1", "edge-1", true},
+		{"edge-1", "", false},
+		{"edge-1", "local", false},
+	}
+	for _, tc := range tests {
+		if got := RunOnThisNode(tc.node, tc.tunnel); got != tc.want {
+			t.Errorf("RunOnThisNode(%q,%q)=%v want %v", tc.node, tc.tunnel, got, tc.want)
+		}
+	}
+}
