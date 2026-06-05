@@ -130,13 +130,6 @@ func (wsm *WebSocketManager) HandleWebSocket(w http.ResponseWriter, r *http.Requ
 		userID = user.ID
 	}
 
-	// Check if response writer supports hijacking
-	if _, ok := w.(http.Hijacker); !ok {
-		log.Error().Msg("WebSocket: response does not implement http.Hijacker")
-		http.Error(w, "WebSocket not supported", http.StatusInternalServerError)
-		return
-	}
-
 	conn, err := wsm.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Error().Err(err).Msg("WebSocket upgrade failed")
