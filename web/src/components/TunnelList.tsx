@@ -7,6 +7,7 @@ import { Button } from './ui/button'
 import type { Tunnel, TunnelStatus } from '@/api/types'
 import { Play, Square, Trash2, Loader2, ArrowRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { getTunnelBrowseUrl } from '@/lib/tunnelUrl'
 
 export function TunnelList() {
   const { isLoading, error } = useTunnels()
@@ -94,6 +95,8 @@ function TunnelRow({
   onDelete: () => void
 }) {
   const status = statusLabel(tunnel.status)
+  const browseUrl = getTunnelBrowseUrl(tunnel)
+  const endpoint = `${tunnel.remoteHost}:${tunnel.remotePort}`
 
   return (
     <li
@@ -115,9 +118,19 @@ function TunnelRow({
         <p className="mt-2 flex flex-wrap items-center gap-2 font-mono text-xs text-muted-foreground">
           <span>:{tunnel.localPort}</span>
           <ArrowRight className="h-3 w-3" />
-          <span>
-            {tunnel.remoteHost}:{tunnel.remotePort}
-          </span>
+          {browseUrl ? (
+            <a
+              href={browseUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={`Open via tunnel (${browseUrl})`}
+              className="rounded-sm text-muted-foreground underline-offset-2 transition-colors hover:bg-muted/40 hover:text-foreground hover:underline decoration-muted-foreground/50"
+            >
+              {endpoint}
+            </a>
+          ) : (
+            <span>{endpoint}</span>
+          )}
           {tunnel.agentId && (
             <span className="text-muted-foreground/70">agent {tunnel.agentId}</span>
           )}
