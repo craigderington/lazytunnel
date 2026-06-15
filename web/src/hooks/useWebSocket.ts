@@ -23,6 +23,7 @@ export function useWebSocket() {
   const updateTunnel = useTunnelStore((s) => s.updateTunnel)
   const setWsConnected = useConnectionStore((s) => s.setWsConnected)
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
+  const authRequired = useAuthStore((s) => s.authRequired)
   const isDemoMode = useTunnelStore((s) => s.isDemoMode)
 
   const disconnect = useCallback(() => {
@@ -46,12 +47,16 @@ export function useWebSocket() {
     }
 
     const token = await getAuthToken()
-    if (!token) {
+    // Only a configured-auth server demands a token; when auth is disabled the
+    // backend accepts tokenless WS connections, so don't block on a missing one.
+    if (authRequired && !token) {
       return
     }
 
     let url = wsUrl('/ws')
-    url += `?token=${encodeURIComponent(token)}`
+    if (token) {
+      url += `?token=${encodeURIComponent(token)}`
+    }
 
     const socket = new WebSocket(url)
     wsRef.current = socket
@@ -84,7 +89,7 @@ export function useWebSocket() {
     }
 
     socket.onerror = () => setWsConnected(false)
-  }, [disconnect, isAuthenticated, isDemoMode, setWsConnected, updateTunnel])
+  }, [disconnect, isAuthenticated, authRequired, isDemoMode, setWsConnected, updateTunnel])
 
   useEffect(() => {
     void connect()
