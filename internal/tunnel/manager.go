@@ -12,6 +12,7 @@ import (
 // Storage defines the interface for tunnel persistence
 type Storage interface {
 	Save(ctx context.Context, spec *types.TunnelSpec) error
+	Update(ctx context.Context, spec *types.TunnelSpec) error
 	UpdateStatus(ctx context.Context, tunnelID, status string) error
 	UpdateDesiredStatus(ctx context.Context, tunnelID string, status types.DesiredStatus) error
 	Delete(ctx context.Context, tunnelID string) error
@@ -169,6 +170,36 @@ func (m *Manager) Create(ctx context.Context, spec *types.TunnelSpec) error {
 		tunnel.updateStatus(types.TunnelStateStopped, "")
 	}
 
+	return nil
+}
+
+// Update replaces the configuration for a stopped tunnel.
+func (m *Manager) Update(ctx context.Context, spec *types.TunnelSpec) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	tunnel, exists := m.tunnels[spec.ID]
+	if !exists {
+		return fmt.Errorf("tunnel %s not found", spec.ID)
+	}
+
+	if tunnel.Status != nil {
+		switch tunnel.Status.State {
+		case types.TunnelStateActive, types.TunnelStatePending:
+			return fmt.Errorf("tunnel %s must be stopped before editing", spec.ID)
+		}
+	}
+
+	spec.UpdatedAt = time.Now()
+	if m.storage != nil {
+		if err := m.storage.Update(ctx, spec); err != nil {
+			return fmt.Errorf("failed to update tunnel in storage: %w", err)
+		}
+	}
+
+	tunnel.Spec = spec
+	tunnel.CreatedAt = spec.CreatedAt
+	tunnel.updateStatus(types.TunnelStateStopped, "")
 	return nil
 }
 

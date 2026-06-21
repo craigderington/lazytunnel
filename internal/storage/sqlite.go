@@ -164,6 +164,14 @@ func (s *SQLiteStore) Save(ctx context.Context, spec *types.TunnelSpec) error {
 	return nil
 }
 
+// Update replaces a stored tunnel spec while preserving the tunnel ID.
+func (s *SQLiteStore) Update(ctx context.Context, spec *types.TunnelSpec) error {
+	if _, err := s.Get(ctx, spec.ID); err != nil {
+		return err
+	}
+	return s.Save(ctx, spec)
+}
+
 // UpdateStatus updates the status of a tunnel
 func (s *SQLiteStore) UpdateStatus(ctx context.Context, tunnelID, status string) error {
 	query := `UPDATE tunnels SET status = ?, updated_at = ? WHERE id = ?`

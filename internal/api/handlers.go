@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 
+	runtunnel "github.com/craigderington/lazytunnel/internal/tunnel"
 	"github.com/craigderington/lazytunnel/pkg/types"
 )
 
@@ -110,19 +111,6 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert validated hops to types.Hop
-	hops := make([]types.Hop, len(req.Hops))
-	for i, h := range req.Hops {
-		hops[i] = types.Hop{
-			Host:                h.Host,
-			Port:                h.Port,
-			User:                h.User,
-			AuthMethod:          types.AuthMethod(h.AuthMethod),
-			KeyID:               h.KeyID,
-			HostKeyVerification: types.HostKeyVerifyStrict, // Default to strict verification
-		}
-	}
-
 	// Determine owner from context if authenticated
 	owner := "api-user"
 	if user, ok := GetUser(r.Context()); ok {
@@ -135,7 +123,7 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 		Name:             SanitizeString(req.Name),
 		Owner:            owner,
 		Type:             types.TunnelType(req.Type),
-		Hops:             hops,
+		Hops:             tunnelHopsFromRequest(req.Hops),
 		LocalPort:        req.LocalPort,
 		LocalBindAddress: req.LocalBindAddress,
 		RemoteHost:       req.RemoteHost,
@@ -172,25 +160,7 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 
 	// Return the created tunnel in the format the frontend expects
 	// Status will be "connecting" initially, then transition to "active" or "failed"
-	s.respondJSON(w, http.StatusCreated, map[string]interface{}{
-		"id":               spec.ID,
-		"name":             spec.Name,
-		"owner":            spec.Owner,
-		"agentId":          spec.AgentID,
-		"desiredStatus":    string(spec.DesiredStatus),
-		"type":             spec.Type,
-		"hops":             spec.Hops,
-		"localPort":        spec.LocalPort,
-		"localBindAddress": spec.LocalBindAddress,
-		"remoteHost":       spec.RemoteHost,
-		"remotePort":       spec.RemotePort,
-		"autoReconnect":    spec.AutoReconnect,
-		"keepAlive":        spec.KeepAlive.Seconds(),
-		"maxRetries":       spec.MaxRetries,
-		"status":           "connecting", // Connecting in background
-		"createdAt":        spec.CreatedAt.Format(time.RFC3339),
-		"updatedAt":        spec.UpdatedAt.Format(time.RFC3339),
-	})
+	s.respondJSON(w, http.StatusCreated, tunnelResponse(&runtunnel.Tunnel{Spec: &spec, CreatedAt: spec.CreatedAt}, "connecting", ""))
 }
 
 // handleGetTunnel returns details for a specific tunnel
@@ -226,24 +196,63 @@ func (s *Server) handleGetTunnel(w http.ResponseWriter, r *http.Request) {
 		statusStr = "disconnected"
 	}
 
-	s.respondJSON(w, http.StatusOK, map[string]interface{}{
-		"id":               tunnel.Spec.ID,
-		"name":             tunnel.Spec.Name,
-		"owner":            tunnel.Spec.Owner,
-		"type":             tunnel.Spec.Type,
-		"hops":             tunnel.Spec.Hops,
-		"localPort":        tunnel.Spec.LocalPort,
-		"localBindAddress": tunnel.Spec.LocalBindAddress,
-		"remoteHost":       tunnel.Spec.RemoteHost,
-		"remotePort":       tunnel.Spec.RemotePort,
-		"autoReconnect":    tunnel.Spec.AutoReconnect,
-		"keepAlive":        tunnel.Spec.KeepAlive.Seconds(),
-		"maxRetries":       tunnel.Spec.MaxRetries,
-		"status":           statusStr,
-		"createdAt":        tunnel.CreatedAt.Format(time.RFC3339),
-		"updatedAt":        tunnel.Spec.UpdatedAt.Format(time.RFC3339),
-		"errorMessage":     errorMsg,
-	})
+	s.respondJSON(w, http.StatusOK, tunnelResponse(tunnel, statusStr, errorMsg))
+}
+
+// handleUpdateTunnel updates a stopped tunnel configuration.
+func (s *Server) handleUpdateTunnel(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	tunnelID := vars["id"]
+
+	current, err := s.manager.Get(tunnelID)
+	if err != nil {
+		s.TunnelNotFound(w, tunnelID)
+		return
+	}
+
+	var req CreateTunnelRequest
+	if !s.decodeAndValidate(w, r, &req) {
+		return
+	}
+
+	localBindAddress := req.LocalBindAddress
+	if localBindAddress == "" {
+		localBindAddress = current.Spec.LocalBindAddress
+	}
+
+	spec := *current.Spec
+	spec.Name = SanitizeString(req.Name)
+	spec.Type = types.TunnelType(req.Type)
+	spec.Hops = tunnelHopsFromRequest(req.Hops)
+	spec.LocalPort = req.LocalPort
+	spec.LocalBindAddress = localBindAddress
+	spec.RemoteHost = req.RemoteHost
+	spec.RemotePort = req.RemotePort
+	spec.AutoReconnect = req.AutoReconnect
+	spec.KeepAlive = time.Duration(req.KeepAlive) * time.Second
+	spec.MaxRetries = req.MaxRetries
+	spec.AgentID = req.AgentID
+
+	if spec.KeepAlive == 0 {
+		spec.KeepAlive = 30 * time.Second
+	}
+	if spec.MaxRetries == 0 {
+		spec.MaxRetries = 5
+	}
+
+	if err := s.manager.Update(context.Background(), &spec); err != nil {
+		s.logger.Error().Err(err).Str("tunnel_id", tunnelID).Msg("Failed to update tunnel")
+		s.BadRequest(w, err.Error())
+		return
+	}
+
+	updated, err := s.manager.Get(tunnelID)
+	if err != nil {
+		s.TunnelNotFound(w, tunnelID)
+		return
+	}
+
+	s.respondJSON(w, http.StatusOK, tunnelResponse(updated, "stopped", ""))
 }
 
 // handleGetTunnelStatus returns status for a specific tunnel
@@ -308,23 +317,7 @@ func (s *Server) handleStartTunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.respondJSON(w, http.StatusOK, map[string]interface{}{
-		"id":               tunnel.Spec.ID,
-		"name":             tunnel.Spec.Name,
-		"owner":            tunnel.Spec.Owner,
-		"type":             tunnel.Spec.Type,
-		"hops":             tunnel.Spec.Hops,
-		"localPort":        tunnel.Spec.LocalPort,
-		"localBindAddress": tunnel.Spec.LocalBindAddress,
-		"remoteHost":       tunnel.Spec.RemoteHost,
-		"remotePort":       tunnel.Spec.RemotePort,
-		"autoReconnect":    tunnel.Spec.AutoReconnect,
-		"keepAlive":        tunnel.Spec.KeepAlive.Seconds(),
-		"maxRetries":       tunnel.Spec.MaxRetries,
-		"status":           "connecting",
-		"createdAt":        tunnel.CreatedAt.Format(time.RFC3339),
-		"updatedAt":        tunnel.Spec.UpdatedAt.Format(time.RFC3339),
-	})
+	s.respondJSON(w, http.StatusOK, tunnelResponse(tunnel, "connecting", ""))
 }
 
 // handleStopTunnel stops a running tunnel (keeps it in the manager)
@@ -351,23 +344,7 @@ func (s *Server) handleStopTunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.respondJSON(w, http.StatusOK, map[string]interface{}{
-		"id":               tunnel.Spec.ID,
-		"name":             tunnel.Spec.Name,
-		"owner":            tunnel.Spec.Owner,
-		"type":             tunnel.Spec.Type,
-		"hops":             tunnel.Spec.Hops,
-		"localPort":        tunnel.Spec.LocalPort,
-		"localBindAddress": tunnel.Spec.LocalBindAddress,
-		"remoteHost":       tunnel.Spec.RemoteHost,
-		"remotePort":       tunnel.Spec.RemotePort,
-		"autoReconnect":    tunnel.Spec.AutoReconnect,
-		"keepAlive":        tunnel.Spec.KeepAlive.Seconds(),
-		"maxRetries":       tunnel.Spec.MaxRetries,
-		"status":           "stopped",
-		"createdAt":        tunnel.CreatedAt.Format(time.RFC3339),
-		"updatedAt":        tunnel.Spec.UpdatedAt.Format(time.RFC3339),
-	})
+	s.respondJSON(w, http.StatusOK, tunnelResponse(tunnel, "stopped", ""))
 }
 
 // handleGetTunnelMetrics returns metrics for a specific tunnel

@@ -88,6 +88,21 @@ export function useCreateTunnel() {
   })
 }
 
+export function useUpdateTunnel() {
+  const queryClient = useQueryClient()
+  const updateTunnel = useTunnelStore((state) => state.updateTunnel)
+
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: CreateTunnelRequest }) =>
+      api.updateTunnel(id, data),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: tunnelKeys.lists() })
+      queryClient.invalidateQueries({ queryKey: tunnelKeys.detail(data.id) })
+      updateTunnel(data.id, data)
+    },
+  })
+}
+
 export function useDeleteTunnel() {
   const queryClient = useQueryClient()
   const removeTunnel = useTunnelStore((state) => state.removeTunnel)

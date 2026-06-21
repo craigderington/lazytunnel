@@ -42,6 +42,7 @@ export interface CreateTunnelRequest {
   autoReconnect?: boolean
   keepAlive?: number
   maxRetries?: number
+  agentId?: string
 }
 
 export interface TunnelMetrics {

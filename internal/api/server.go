@@ -157,6 +157,7 @@ func (s *Server) setupRoutes() {
 	protected.HandleFunc("/tunnels", s.handleListTunnels).Methods("GET", "OPTIONS")
 	protected.HandleFunc("/tunnels", s.handleCreateTunnel).Methods("POST", "OPTIONS")
 	protected.HandleFunc("/tunnels/{id}", s.handleGetTunnel).Methods("GET", "OPTIONS")
+	protected.HandleFunc("/tunnels/{id}", s.handleUpdateTunnel).Methods("PUT", "OPTIONS")
 	protected.HandleFunc("/tunnels/{id}", s.handleDeleteTunnel).Methods("DELETE", "OPTIONS")
 	protected.HandleFunc("/tunnels/{id}/start", s.handleStartTunnel).Methods("POST", "OPTIONS")
 	protected.HandleFunc("/tunnels/{id}/stop", s.handleStopTunnel).Methods("POST", "OPTIONS")

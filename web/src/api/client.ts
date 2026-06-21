@@ -99,6 +99,13 @@ export class LazytunnelClient {
     })
   }
 
+  updateTunnel(id: string, body: CreateTunnelRequest): Promise<Tunnel> {
+    return this.request<Tunnel>(`/tunnels/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    })
+  }
+
   deleteTunnel(id: string): Promise<void> {
     return this.request<void>(`/tunnels/${id}`, { method: 'DELETE' })
   }

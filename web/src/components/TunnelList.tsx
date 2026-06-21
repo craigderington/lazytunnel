@@ -5,9 +5,10 @@ import { PageHeader } from './PageHeader'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import type { Tunnel, TunnelStatus } from '@/api/types'
-import { Play, Square, Trash2, Loader2, ArrowRight } from 'lucide-react'
+import { Play, Square, Trash2, Pencil, Loader2, ArrowRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { getTunnelBrowseUrl } from '@/lib/tunnelUrl'
+import { EditTunnelDialog } from './EditTunnelDialog'
 
 export function TunnelList() {
   const { isLoading, error } = useTunnels()
@@ -17,6 +18,7 @@ export function TunnelList() {
   const stopTunnel = useStopTunnel()
   const deleteTunnel = useDeleteTunnel()
   const [busy, setBusy] = useState<string | null>(null)
+  const [editing, setEditing] = useState<Tunnel | null>(null)
 
   if (isLoading && tunnels.length === 0) {
     return (
@@ -70,6 +72,7 @@ export function TunnelList() {
                 setBusy(tunnel.id)
                 stopTunnel.mutate(tunnel.id, { onSettled: () => setBusy(null) })
               }}
+              onEdit={() => setEditing(tunnel)}
               onDelete={() => {
                 setBusy(tunnel.id)
                 deleteTunnel.mutate(tunnel.id, { onSettled: () => setBusy(null) })
@@ -77,6 +80,17 @@ export function TunnelList() {
             />
           ))}
       </ul>
+
+      {editing && (
+        <EditTunnelDialog
+          key={editing.id}
+          tunnel={editing}
+          open
+          onOpenChange={(o) => {
+            if (!o) setEditing(null)
+          }}
+        />
+      )}
     </>
   )
 }
@@ -86,17 +100,20 @@ function TunnelRow({
   busy,
   onStart,
   onStop,
+  onEdit,
   onDelete,
 }: {
   tunnel: Tunnel
   busy: boolean
   onStart: () => void
   onStop: () => void
+  onEdit: () => void
   onDelete: () => void
 }) {
   const status = statusLabel(tunnel.status)
   const browseUrl = getTunnelBrowseUrl(tunnel)
   const endpoint = `${tunnel.remoteHost}:${tunnel.remotePort}`
+  const canEdit = tunnel.status !== 'active' && tunnel.status !== 'connecting'
 
   return (
     <li
@@ -161,6 +178,15 @@ function TunnelRow({
             <span className="ml-1.5">Start</span>
           </Button>
         )}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onEdit}
+          disabled={busy || !canEdit}
+          title={canEdit ? 'Edit tunnel' : 'Stop the tunnel to edit'}
+        >
+          <Pencil className="h-3 w-3 text-muted-foreground" />
+        </Button>
         <Button variant="ghost" size="sm" onClick={onDelete} disabled={busy}>
           <Trash2 className="h-3 w-3 text-muted-foreground" />
         </Button>
