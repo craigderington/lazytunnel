@@ -110,8 +110,8 @@ func (m *MemorySecureStorage) decrypt(ciphertext string) (string, error) {
 		return "", fmt.Errorf("ciphertext too short")
 	}
 
-	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	nonce, encrypted := data[:nonceSize], data[nonceSize:]
+	plaintext, err := gcm.Open(nil, nonce, encrypted, nil)
 	if err != nil {
 		return "", err
 	}

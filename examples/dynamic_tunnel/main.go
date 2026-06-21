@@ -55,7 +55,9 @@ func main() {
 	fmt.Println("\nUsage examples:")
 	fmt.Println("  curl --socks5 localhost:1080 https://example.com")
 	fmt.Println("  export ALL_PROXY=socks5://localhost:1080")
-	fmt.Println("  ssh -o ProxyCommand='nc -X 5 -x localhost:1080 %h %p' user@internal-host")
+	// %h/%p are literal ssh ProxyCommand placeholders, not format verbs.
+	sshExample := "  ssh -o ProxyCommand='nc -X 5 -x localhost:1080 %h %p' user@internal-host"
+	fmt.Println(sshExample)
 
 	// Get tunnel status
 	t, err := manager.Get(spec.ID)
