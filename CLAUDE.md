@@ -24,8 +24,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Infrastructure
 - Docker with multi-stage builds
-- Kubernetes + Helm charts
-- AWS KMS or HashiCorp Vault for key management
+- Kubernetes + Helm charts (not yet implemented / aspirational — `deployments/helm/` and `deployments/k8s/` are empty, untracked directories; no chart or manifest exists in the repo)
+- AWS KMS or HashiCorp Vault for key management (not yet implemented / aspirational — see Security Requirements → Key Management)
 - Optional JWT bearer-token authentication (disabled by default unless a JWT secret is configured)
 
 ## Project Structure
@@ -68,28 +68,36 @@ lazytunnel/
 The system revolves around `TunnelSpec` which defines a tunnel configuration:
 
 ```go
+// pkg/types/tunnel.go
 type TunnelSpec struct {
-    ID              string        // Unique identifier
-    Name            string        // Human-readable name
-    Owner           string        // User/service that owns this tunnel
-    Type            TunnelType    // local, remote, dynamic (SOCKS5)
-    Hops            []Hop         // Multi-hop chain (bastion -> target)
-    LocalPort       int           // Local bind port
-    RemoteHost      string        // Final destination host
-    RemotePort      int           // Final destination port
-    Auth            AuthConfig    // Authentication configuration
-    AutoReconnect   bool          // Enable automatic reconnection
-    KeepAlive       time.Duration // SSH keep-alive interval
-    MaxRetries      int           // Maximum reconnection attempts
-    Policy          PolicySpec    // Authorization policy
+    ID               string        // Unique identifier
+    Name             string        // Human-readable name
+    Owner            string        // User/service that owns this tunnel
+    AgentID          string        // Empty = run on API server (embedded); else routed to a remote agent
+    DesiredStatus    DesiredStatus // Control-plane target state: "stopped" or "active"
+    Type             TunnelType    // local, remote, dynamic (SOCKS5)
+    Hops             []Hop         // Multi-hop chain (bastion -> target)
+    LocalPort        int           // Local bind port
+    LocalBindAddress string        // Local bind address
+    RemoteHost       string        // Final destination host
+    RemotePort       int           // Final destination port
+    Auth             AuthConfig    // Authentication configuration
+    AutoReconnect    bool          // Enable automatic reconnection
+    KeepAlive        time.Duration // SSH keep-alive interval
+    MaxRetries       int           // Maximum reconnection attempts
+    Policy           PolicySpec    // Authorization policy
+    CreatedAt        time.Time     // Creation timestamp
+    UpdatedAt        time.Time     // Last-update timestamp
 }
 
 type Hop struct {
-    Host        string  // Hostname/IP
-    Port        int     // SSH port (typically 22)
-    User        string  // SSH username
-    AuthMethod  string  // key, password, agent, cert
-    KeyID       string  // KMS key identifier
+    Host                string              // Hostname/IP
+    Port                int                 // SSH port (typically 22)
+    User                string              // SSH username
+    AuthMethod          AuthMethod          // key, password, agent, cert
+    KeyID               string              // Path to SSH private key file (KMS is not yet integrated; see Security Requirements → Key Management)
+    HostKeyVerification HostKeyVerification // strict, prompt, or insecure
+    KnownHostsPath      string              // Path to known_hosts file
 }
 ```
 
@@ -149,9 +157,6 @@ GOOS=linux GOARCH=amd64 go build -o bin/tunnelctl-linux cmd/tunnelctl/main.go
 # tool is used). New columns are added with a guarded ALTER TABLE ... ADD COLUMN,
 # following the existing agent_id / desired_status pattern.
 
-# Run server with live reload (install air: go install github.com/cosmtrek/air@latest)
-air -c .air.toml
-
 # Or run directly
 go run cmd/server/main.go --config config.yaml
 
@@ -165,9 +170,10 @@ go run cmd/tunnelctl/main.go list
 ### Docker
 
 ```bash
-# Build images
+# Build images (only Dockerfile.server and Dockerfile.web are tracked; there is no
+# Dockerfile.agent)
 docker build -f deployments/docker/Dockerfile.server -t lazytunnel-server .
-docker build -f deployments/docker/Dockerfile.agent -t lazytunnel-agent .
+docker build -f deployments/docker/Dockerfile.web -t lazytunnel-web .
 
 # Run locally
 docker-compose up
@@ -211,14 +217,19 @@ describe the intended future state, not the current system:
 - Audit all key access operations
 
 ### API Security
-- TLS 1.3 minimum for all API endpoints
+- TLS is optional: the server only serves HTTPS when both `server.tls_cert` and
+  `server.tls_key` are configured (`internal/api/server.go`, `StartTLS`). No
+  `tls.Config.MinVersion` is set anywhere in the repo, so there is no enforced
+  minimum TLS version — Go's default is used when TLS is enabled
 - JWT bearer-token authentication; there is no OAuth2/OIDC integration. Auth is
-  disabled entirely unless a JWT secret is configured (`cmd/server/main.go:71`,
+  disabled entirely unless a JWT secret is configured (`cmd/server/main.go:72`,
   via `auth.jwt_secret` or the `LAZYTUNNEL_JWT_SECRET` env var)
 - Default token expiration is 24h (`auth.token_expiration`), not short-lived
 - The `/api/v1/auth/login` endpoint currently accepts only hardcoded development
   credentials (`admin` / `lazytunnel`) — see `internal/api/handlers.go`
-- Rate limiting per user/role
+- Rate limiting is per client (authenticated user ID if present, otherwise
+  source IP) via a token-bucket limiter (`internal/api/ratelimit.go`,
+  `RateLimiter.extractClientID`); there is no role concept in it
 - Proper CORS configuration
 
 ### Audit Logging
@@ -235,12 +246,14 @@ describe the intended future state, not the current system:
 - Test authentication method selection
 - Test configuration parsing and validation
 
-### Integration Tests
+### Integration Tests (not yet implemented / aspirational)
+`tests/integration/` and `tests/e2e/` are both empty directories today, and no
+`//go:build integration` tag (or any build tag) exists anywhere in the repo. The
+items below describe intended future coverage, not current tests:
 - Requires actual SSH server(s) for testing
 - Test end-to-end tunnel creation
 - Test multi-hop tunneling
 - Test auto-reconnect behavior
-- Tagged with `//go:build integration`
 
 ### Performance Requirements
 - Support 1000+ concurrent tunnels per instance
@@ -251,13 +264,13 @@ describe the intended future state, not the current system:
 ## CLI Usage Examples
 
 ```bash
-# Create a simple local tunnel
+# Create a simple local tunnel (--remote-host takes a combined host:port for
+# local tunnels; --remote-port is only used for --type remote)
 tunnelctl create \
   --name prod-db \
   --type local \
   --local-port 5432 \
-  --remote-host db.internal.example.com \
-  --remote-port 5432 \
+  --remote-host db.internal.example.com:5432 \
   --hop bastion.example.com:22 \
   --user deploy \
   --key ~/.ssh/id_rsa
@@ -273,10 +286,10 @@ tunnelctl status prod-db
 
 # Stop tunnel
 tunnelctl stop prod-db
-
-# Create from YAML config
-tunnelctl apply -f tunnels.yaml
 ```
+
+There is no `apply` subcommand — `internal/cli/root.go` registers only `create`,
+`list`, `status`, `stop`, and `version`.
 
 ## Common Patterns
 
@@ -293,7 +306,7 @@ tunnelctl apply -f tunnels.yaml
 ### Context
 - Pass `context.Context` as first parameter
 - Respect context cancellation in long-running operations
-- Use `context.WithTimeout()` for external calls (SSH, KMS)
+- Use `context.WithTimeout()` for external calls (e.g. SSH)
 
 ## Implementation Status
 
