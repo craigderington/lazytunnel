@@ -3,6 +3,7 @@ package tunnel
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -463,7 +464,9 @@ func (m *Manager) Get(tunnelID string) (*Tunnel, error) {
 	return tunnel, nil
 }
 
-// List returns all tunnels
+// List returns all tunnels, newest first, matching the storage layer's
+// ORDER BY created_at DESC. Ties are broken by ID so the order is a stable
+// total order rather than dependent on Go's randomized map iteration.
 func (m *Manager) List() []*Tunnel {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -472,6 +475,13 @@ func (m *Manager) List() []*Tunnel {
 	for _, tunnel := range m.tunnels {
 		tunnels = append(tunnels, tunnel)
 	}
+
+	sort.Slice(tunnels, func(i, j int) bool {
+		if c := tunnels[i].CreatedAt.Compare(tunnels[j].CreatedAt); c != 0 {
+			return c > 0 // descending: newest first
+		}
+		return tunnels[i].Spec.ID < tunnels[j].Spec.ID
+	})
 
 	return tunnels
 }
