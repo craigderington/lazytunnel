@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import type { CreateTunnelRequest } from '@/types/tunnel'
@@ -26,10 +27,16 @@ export function useTunnels() {
     enabled: !isDemoMode, // Don't fetch from API when in demo mode
   })
 
-  // Update store when data changes (but only if NOT in demo mode)
-  if (query.data && !isDemoMode) {
-    setTunnels(query.data)
-  }
+  const data = query.data
+
+  // Sync into the store after commit, not during render. Writing to an
+  // external store mid-render is a React anti-pattern and would compound
+  // once the ordering effect also writes on new data.
+  useEffect(() => {
+    if (data && !isDemoMode) {
+      setTunnels(data)
+    }
+  }, [data, isDemoMode, setTunnels])
 
   return query
 }

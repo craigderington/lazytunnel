@@ -146,8 +146,11 @@ export function TunnelForm({ tunnel, onSuccess, onCancel }: TunnelFormProps) {
         remotePort: data.remotePort || 0,
         hops,
         autoReconnect: data.autoReconnect,
-        keepAlive: 30,
-        maxRetries: 5,
+        // The form has no inputs for these two. On edit, carry the tunnel's
+        // existing values through rather than resetting them to the defaults.
+        // The API emits and accepts seconds, so this round-trips safely.
+        keepAlive: editing ? Math.round(tunnel!.keepAlive) : 30,
+        maxRetries: editing ? tunnel!.maxRetries : 5,
         agentId: agentId || undefined,
       }
 
