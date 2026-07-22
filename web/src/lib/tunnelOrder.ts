@@ -38,6 +38,16 @@ export function reconcileOrder(
   tunnels: Tunnel[],
   saved: string[]
 ): string[] | null {
+  // A transiently-empty tunnel list must never prune a saved order down to
+  // nothing. The tunnel store is empty until the first poll resolves, so on
+  // every page load `tunnels` is briefly `[]`; without this guard the effect
+  // would persist `[]` and wipe the user's custom order. If every tunnel was
+  // genuinely deleted the stale ids are harmless — orderTunnels ignores ids
+  // with no matching tunnel, and they self-heal on the next create.
+  if (tunnels.length === 0 && saved.length > 0) {
+    return null
+  }
+
   const byId = new Map(tunnels.map((t) => [t.id, t]))
   const savedSet = new Set(saved)
 

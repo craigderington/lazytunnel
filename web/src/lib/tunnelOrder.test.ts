@@ -78,4 +78,10 @@ describe('reconcileOrder', () => {
   it('returns null for an empty list and empty saved order', () => {
     expect(reconcileOrder([], [])).toBeNull()
   })
+
+  it('does not prune a saved order when the tunnel list is transiently empty', () => {
+    // On page load the tunnel store is empty until the first poll resolves.
+    // Pruning here would persist [] and wipe the user's custom order.
+    expect(reconcileOrder([], ['1', '2', '3'])).toBeNull()
+  })
 })
