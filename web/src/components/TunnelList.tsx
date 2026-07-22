@@ -9,6 +9,16 @@ import { Play, Square, Trash2, Pencil, Loader2, ArrowRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { getTunnelBrowseUrl } from '@/lib/tunnelUrl'
 import { EditTunnelDialog } from './EditTunnelDialog'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from './ui/alert-dialog'
 
 export function TunnelList() {
   const { isLoading, error } = useTunnels()
@@ -19,6 +29,7 @@ export function TunnelList() {
   const deleteTunnel = useDeleteTunnel()
   const [busy, setBusy] = useState<string | null>(null)
   const [editing, setEditing] = useState<Tunnel | null>(null)
+  const [confirmingDelete, setConfirmingDelete] = useState<Tunnel | null>(null)
 
   if (isLoading && tunnels.length === 0) {
     return (
@@ -73,10 +84,7 @@ export function TunnelList() {
                 stopTunnel.mutate(tunnel.id, { onSettled: () => setBusy(null) })
               }}
               onEdit={() => setEditing(tunnel)}
-              onDelete={() => {
-                setBusy(tunnel.id)
-                deleteTunnel.mutate(tunnel.id, { onSettled: () => setBusy(null) })
-              }}
+              onDelete={() => setConfirmingDelete(tunnel)}
             />
           ))}
       </ul>
@@ -91,6 +99,41 @@ export function TunnelList() {
           }}
         />
       )}
+
+      <AlertDialog
+        open={confirmingDelete !== null}
+        onOpenChange={(o) => {
+          if (!o) setConfirmingDelete(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Delete {confirmingDelete?.name}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently removes the tunnel and its configuration. If it
+              is running it will be stopped first. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const target = confirmingDelete
+                if (!target) return
+                setConfirmingDelete(null)
+                setBusy(target.id)
+                deleteTunnel.mutate(target.id, {
+                  onSettled: () => setBusy(null),
+                })
+              }}
+            >
+              Delete tunnel
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   )
 }
