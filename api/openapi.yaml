@@ -3,6 +3,9 @@ info:
   title: lazytunnel API
   version: 1.0.0
   description: SSH tunnel management REST API
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
 
 servers:
   - url: /api/v1
@@ -14,6 +17,7 @@ paths:
       operationId: getHealth
       summary: Server health
       tags: [System]
+      security: []
       responses:
         "200":
           description: OK
@@ -22,11 +26,48 @@ paths:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
 
+  /openapi.yaml:
+    get:
+      operationId: getOpenAPISpec
+      summary: OpenAPI specification (public)
+      description: Serves this document. No authentication required.
+      tags: [System]
+      security: []
+      responses:
+        "200":
+          description: OpenAPI 3.0 specification in YAML
+          content:
+            application/yaml:
+              schema:
+                type: string
+        "500":
+          description: Spec file could not be read from disk
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimpleError"
+
+  /metrics:
+    get:
+      operationId: getMetrics
+      summary: Prometheus metrics (public)
+      description: Prometheus text exposition format, for scraping. No authentication required.
+      tags: [System]
+      security: []
+      responses:
+        "200":
+          description: Metrics in Prometheus text exposition format
+          content:
+            text/plain:
+              schema:
+                type: string
+
   /auth/login:
     post:
       operationId: login
       summary: Obtain JWT
       tags: [Auth]
+      security: []
       requestBody:
         required: true
         content:
@@ -42,6 +83,121 @@ paths:
                 $ref: "#/components/schemas/LoginResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
+
+  /agents:
+    get:
+      operationId: listAgents
+      summary: List registered data-plane agents
+      tags: [Agents]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Registered agents
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AgentInfo"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+
+  /agents/register:
+    post:
+      operationId: registerAgent
+      summary: Register or refresh a data-plane agent
+      tags: [Agents]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentRegisterRequest"
+      responses:
+        "200":
+          description: Registered agent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentInfo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+
+  /agents/{id}/heartbeat:
+    post:
+      operationId: agentHeartbeat
+      summary: Record an agent heartbeat
+      tags: [Agents]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      responses:
+        "200":
+          description: Heartbeat recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimpleStatus"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /agents/{id}/assignments:
+    get:
+      operationId: getAgentAssignments
+      summary: List tunnels assigned to an agent
+      tags: [Agents]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      responses:
+        "200":
+          description: Tunnel assignments for the agent (empty array if none)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AgentAssignment"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+
+  /agents/{id}/report:
+    post:
+      operationId: reportAgentStatus
+      summary: Report reconciliation status for one or more tunnels
+      tags: [Agents]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: "#/components/schemas/AgentStatusReport"
+      responses:
+        "200":
+          description: Report accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimpleStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
 
   /tunnels:
     get:
@@ -59,6 +215,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Tunnel"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
     post:
       operationId: createTunnel
       summary: Create tunnel
@@ -78,10 +236,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Tunnel"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
 
   /tunnels/{id}:
     get:
       operationId: getTunnel
+      summary: Get tunnel details
       tags: [Tunnels]
       security:
         - bearerAuth: []
@@ -89,12 +252,45 @@ paths:
         - $ref: "#/components/parameters/TunnelId"
       responses:
         "200":
+          description: Tunnel details
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Tunnel"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      operationId: updateTunnel
+      summary: Update a stopped tunnel's configuration
+      tags: [Tunnels]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TunnelId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTunnelRequest"
+      responses:
+        "200":
+          description: Updated tunnel
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tunnel"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
     delete:
       operationId: deleteTunnel
+      summary: Stop and delete a tunnel
       tags: [Tunnels]
       security:
         - bearerAuth: []
@@ -103,10 +299,15 @@ paths:
       responses:
         "204":
           description: Deleted
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /tunnels/{id}/start:
     post:
       operationId: startTunnel
+      summary: Start a stopped tunnel
       tags: [Tunnels]
       security:
         - bearerAuth: []
@@ -114,14 +315,20 @@ paths:
         - $ref: "#/components/parameters/TunnelId"
       responses:
         "200":
+          description: Tunnel start initiated
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Tunnel"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /tunnels/{id}/stop:
     post:
       operationId: stopTunnel
+      summary: Stop a running tunnel
       tags: [Tunnels]
       security:
         - bearerAuth: []
@@ -129,14 +336,24 @@ paths:
         - $ref: "#/components/parameters/TunnelId"
       responses:
         "200":
+          description: Tunnel stopped
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Tunnel"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
-  /tunnels/{id}/metrics:
+  /tunnels/{id}/status:
     get:
-      operationId: getTunnelMetrics
+      operationId: getTunnelStatus
+      summary: Get raw tunnel status
+      description: >-
+        Returns types.TunnelStatus verbatim (snake_case field names), unlike
+        every other tunnel endpoint, which returns camelCase. The response
+        body is JSON null if the tunnel has not yet recorded a status.
       tags: [Tunnels]
       security:
         - bearerAuth: []
@@ -144,14 +361,41 @@ paths:
         - $ref: "#/components/parameters/TunnelId"
       responses:
         "200":
+          description: Tunnel status (snake_case), or null if no status has been recorded yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TunnelStatus"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /tunnels/{id}/metrics:
+    get:
+      operationId: getTunnelMetrics
+      summary: Get tunnel traffic metrics
+      tags: [Tunnels]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TunnelId"
+      responses:
+        "200":
+          description: Tunnel metrics
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/TunnelMetrics"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /logs:
     get:
       operationId: getLogs
+      summary: Get systemd service logs
       tags: [System]
       security:
         - bearerAuth: []
@@ -167,10 +411,19 @@ paths:
             type: boolean
       responses:
         "200":
+          description: Journal log entries
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/LogsResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "500":
+          description: Failed to read or parse the journal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimpleError"
 
   /ws:
     get:
@@ -180,6 +433,11 @@ paths:
       security:
         - bearerAuth: []
       description: Browser clients may pass ?token= JWT when Authorization header is unavailable.
+      responses:
+        "101":
+          description: Switching Protocols
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
 
 components:
   securitySchemes:
@@ -195,10 +453,38 @@ components:
       required: true
       schema:
         type: string
+    AgentId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
 
   responses:
     Unauthorized:
-      description: Missing or invalid token
+      description: Invalid username or password (login-specific; APIError shape)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
+    AuthenticationRequired:
+      description: >-
+        Missing, invalid, or expired bearer token. Returned directly by
+        AuthMiddleware (internal/api/auth.go) before the request reaches the
+        handler, as `{"error": "..."}` — not the standardized APIError shape
+        used elsewhere.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/SimpleError"
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
+    NotFound:
+      description: Resource not found
       content:
         application/json:
           schema:
@@ -244,8 +530,36 @@ components:
         expiresIn:
           type: integer
 
+    HopRequest:
+      type: object
+      description: >-
+        The hop shape accepted in createTunnel/updateTunnel request bodies
+        (internal/api/validation.go HopReq). Distinct from Hop, the shape
+        returned in tunnel responses.
+      required: [host, user, auth_method]
+      properties:
+        host:
+          type: string
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        user:
+          type: string
+          minLength: 1
+          maxLength: 100
+        auth_method:
+          type: string
+          enum: [key, password, agent, cert]
+        key_id:
+          type: string
+
     Hop:
       type: object
+      description: >-
+        The hop shape returned in tunnel responses (pkg/types/tunnel.go
+        Hop). Adds server-assigned host-key verification fields not present
+        on HopRequest.
       properties:
         host:
           type: string
@@ -256,32 +570,59 @@ components:
         auth_method:
           type: string
           enum: [key, password, agent, cert]
+        key_id:
+          type: string
+        host_key_verification:
+          type: string
+          enum: [strict, prompt, insecure]
+        known_hosts_path:
+          type: string
 
     CreateTunnelRequest:
       type: object
-      required: [name, type, hops, localPort, remoteHost, remotePort]
+      required: [name, type, hops, remoteHost, remotePort]
       properties:
         name:
           type: string
+          minLength: 1
+          maxLength: 100
         type:
           type: string
           enum: [local, remote, dynamic]
         hops:
           type: array
+          minItems: 1
           items:
-            $ref: "#/components/schemas/Hop"
+            $ref: "#/components/schemas/HopRequest"
         localPort:
           type: integer
+          minimum: 0
+          maximum: 65535
+          description: 0 requests an OS-assigned ephemeral port.
+        localBindAddress:
+          type: string
         remoteHost:
           type: string
         remotePort:
           type: integer
+          minimum: 1
+          maximum: 65535
         autoReconnect:
           type: boolean
         keepAlive:
-          type: number
+          type: integer
+          minimum: 0
+          maximum: 300
+          description: Keep-alive interval in seconds. 0 falls back to a 30s server default.
         maxRetries:
           type: integer
+          minimum: 0
+          maximum: 100
+          description: 0 falls back to a server default of 5.
+        agentId:
+          type: string
+          maxLength: 100
+          description: Empty string runs the tunnel embedded in the API server.
 
     Tunnel:
       type: object
@@ -292,14 +633,23 @@ components:
           type: string
         owner:
           type: string
+        agentId:
+          type: string
+          description: Empty string means the tunnel runs embedded in the API server.
+        desiredStatus:
+          type: string
+          enum: [stopped, active]
         type:
           type: string
+          enum: [local, remote, dynamic]
         hops:
           type: array
           items:
             $ref: "#/components/schemas/Hop"
         localPort:
           type: integer
+        localBindAddress:
+          type: string
         remoteHost:
           type: string
         remotePort:
@@ -308,6 +658,7 @@ components:
           type: boolean
         keepAlive:
           type: number
+          description: Keep-alive interval in seconds.
         maxRetries:
           type: integer
         status:
@@ -315,10 +666,41 @@ components:
           enum: [active, connecting, disconnected, failed, stopped]
         createdAt:
           type: string
+          format: date-time
         updatedAt:
           type: string
+          format: date-time
         errorMessage:
           type: string
+
+    TunnelStatus:
+      type: object
+      description: >-
+        types.TunnelStatus serialized verbatim (snake_case field names),
+        returned as-is by GET /tunnels/{id}/status.
+      properties:
+        tunnel_id:
+          type: string
+        state:
+          type: string
+          enum: [pending, active, failed, stopped]
+        connected_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_error:
+          type: string
+        bytes_sent:
+          type: integer
+          format: int64
+        bytes_received:
+          type: integer
+          format: int64
+        latency:
+          type: integer
+          description: Nanoseconds (Go time.Duration, serialized as a plain integer).
+        retry_count:
+          type: integer
 
     TunnelMetrics:
       type: object
@@ -344,6 +726,154 @@ components:
           items:
             type: object
 
+    AgentInfo:
+      type: object
+      description: types.AgentInfo serialized verbatim (snake_case field names).
+      properties:
+        id:
+          type: string
+        hostname:
+          type: string
+        version:
+          type: string
+        status:
+          type: string
+          enum: [online, offline]
+        last_seen:
+          type: string
+          format: date-time
+        tunnel_count:
+          type: integer
+
+    AgentRegisterRequest:
+      type: object
+      description: Decoded directly from JSON; the handler rejects an empty id.
+      required: [id]
+      properties:
+        id:
+          type: string
+        hostname:
+          type: string
+          description: Defaults to id if omitted.
+        version:
+          type: string
+
+    AgentAssignment:
+      type: object
+      description: types.AgentAssignment serialized verbatim (snake_case field names).
+      properties:
+        spec:
+          $ref: "#/components/schemas/TunnelSpec"
+        desired_status:
+          type: string
+          enum: [stopped, active]
+        reported_status:
+          type: string
+
+    AgentStatusReport:
+      type: object
+      description: types.AgentStatusReport serialized verbatim (snake_case field names).
+      properties:
+        tunnel_id:
+          type: string
+        status:
+          type: string
+        last_error:
+          type: string
+
+    TunnelSpec:
+      type: object
+      description: >-
+        types.TunnelSpec serialized verbatim (snake_case field names);
+        embedded as AgentAssignment.spec.
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        owner:
+          type: string
+        agent_id:
+          type: string
+        desired_status:
+          type: string
+          enum: [stopped, active]
+        type:
+          type: string
+          enum: [local, remote, dynamic]
+        hops:
+          type: array
+          items:
+            $ref: "#/components/schemas/Hop"
+        local_port:
+          type: integer
+        local_bind_address:
+          type: string
+        remote_host:
+          type: string
+        remote_port:
+          type: integer
+        auth:
+          $ref: "#/components/schemas/AuthConfig"
+        auto_reconnect:
+          type: boolean
+        keep_alive:
+          type: integer
+          description: Nanoseconds (Go time.Duration, serialized as a plain integer).
+        max_retries:
+          type: integer
+        policy:
+          $ref: "#/components/schemas/PolicySpec"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    AuthConfig:
+      type: object
+      properties:
+        method:
+          type: string
+          enum: [key, password, agent, cert]
+        key_id:
+          type: string
+        username:
+          type: string
+        use_agent:
+          type: boolean
+
+    PolicySpec:
+      type: object
+      properties:
+        allowed_users:
+          type: array
+          items:
+            type: string
+        allowed_groups:
+          type: array
+          items:
+            type: string
+        requires_mfa:
+          type: boolean
+
+    SimpleStatus:
+      type: object
+      description: 'The `{"status": "ok"}` shape returned by agentHeartbeat and reportAgentStatus.'
+      properties:
+        status:
+          type: string
+
+    ErrorDetail:
+      type: object
+      properties:
+        field:
+          type: string
+        value: {}
+        issue:
+          type: string
+
     APIError:
       type: object
       properties:
@@ -351,5 +881,24 @@ components:
           type: string
         message:
           type: string
+        details:
+          type: array
+          items:
+            $ref: "#/components/schemas/ErrorDetail"
+        request_id:
+          type: string
         timestamp:
+          type: string
+          format: date-time
+
+    SimpleError:
+      type: object
+      description: >-
+        The `{"error": "..."}` shape emitted by respondError
+        (internal/api/server.go), used by getOpenAPISpec and getLogs on
+        failure, and independently by AuthMiddleware.respondError
+        (internal/api/auth.go) for 401 responses. Distinct from APIError,
+        the standardized error shape used elsewhere.
+      properties:
+        error:
           type: string

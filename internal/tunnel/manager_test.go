@@ -248,3 +248,46 @@ func TestRunOnThisNode(t *testing.T) {
 		}
 	}
 }
+
+func TestListReturnsDeterministicOrder(t *testing.T) {
+	ctx := context.Background()
+	manager := NewManager(ctx)
+
+	base := time.Now()
+	// Insert with identical CreatedAt for two of them so the ID tiebreaker is exercised.
+	seed := []struct {
+		id        string
+		createdAt time.Time
+	}{
+		{"ccc", base.Add(-2 * time.Hour)},
+		{"aaa", base},
+		{"bbb", base},
+		{"ddd", base.Add(-1 * time.Hour)},
+	}
+
+	for _, s := range seed {
+		manager.tunnels[s.id] = &Tunnel{
+			Spec:      &types.TunnelSpec{ID: s.id, Name: s.id},
+			CreatedAt: s.createdAt,
+		}
+	}
+
+	// Newest first; equal timestamps broken by ID ascending.
+	want := []string{"aaa", "bbb", "ddd", "ccc"}
+
+	// Repeat: a single pass can pass by luck under randomized map iteration.
+	for i := 0; i < 20; i++ {
+		got := make([]string, 0, len(want))
+		for _, tunnel := range manager.List() {
+			got = append(got, tunnel.Spec.ID)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("iteration %d: got %d tunnels, want %d", i, len(got), len(want))
+		}
+		for j := range want {
+			if got[j] != want[j] {
+				t.Fatalf("iteration %d: got order %v, want %v", i, got, want)
+			}
+		}
+	}
+}

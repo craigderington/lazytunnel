@@ -19,6 +19,25 @@ var listCmd = &cobra.Command{
 	RunE:  runList,
 }
 
+// tunnelListItem mirrors the fields handleListTunnels emits for each tunnel.
+// The server responds with a bare array, a flat status string, and camelCase
+// timestamp keys.
+type tunnelListItem struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	Status    string `json:"status"`
+	CreatedAt string `json:"createdAt"`
+}
+
+func parseTunnelList(body []byte) ([]tunnelListItem, error) {
+	var items []tunnelListItem
+	if err := json.Unmarshal(body, &items); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return items, nil
+}
+
 func runList(cmd *cobra.Command, args []string) error {
 	serverURL := viper.GetString("server")
 	url := fmt.Sprintf("%s/api/v1/tunnels", serverURL)
@@ -35,14 +54,9 @@ func runList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to list tunnels: %s", string(body))
 	}
 
-	var result map[string]interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	tunnels, ok := result["tunnels"].([]interface{})
-	if !ok {
-		return fmt.Errorf("invalid response format")
+	tunnels, err := parseTunnelList(body)
+	if err != nil {
+		return err
 	}
 
 	if len(tunnels) == 0 {
@@ -50,30 +64,22 @@ func runList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Print table
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "ID\tNAME\tTYPE\tSTATE\tCREATED")
 	fmt.Fprintln(w, "──\t────\t────\t─────\t───────")
 
-	for _, t := range tunnels {
-		tunnel := t.(map[string]interface{})
-
-		id := tunnel["id"].(string)
-		name := tunnel["name"].(string)
-		ttype := tunnel["type"].(string)
-
-		status := tunnel["status"].(map[string]interface{})
-		state := status["state"].(string)
-
-		createdAt := tunnel["created_at"].(string)
-		created, _ := time.Parse(time.RFC3339, createdAt)
+	for _, tunnel := range tunnels {
+		created := tunnel.CreatedAt
+		if parsed, err := time.Parse(time.RFC3339, tunnel.CreatedAt); err == nil {
+			created = parsed.Format("2006-01-02 15:04")
+		}
 
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-			truncate(id, 8),
-			name,
-			ttype,
-			state,
-			created.Format("2006-01-02 15:04"),
+			truncate(tunnel.ID, 8),
+			tunnel.Name,
+			tunnel.Type,
+			tunnel.Status,
+			created,
 		)
 	}
 
