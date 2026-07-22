@@ -15,6 +15,9 @@ go.work
 /server
 /agent
 /tunnelctl
+/lazytunnel-server
+/lazytunnel-agent
+/lazytunnel-web
 
 # Dependency directories
 vendor/
@@ -49,6 +52,11 @@ logs/
 *.db
 *.sqlite
 *.sqlite3
+# SQLite WAL/SHM sidecar files (not matched by *.db)
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
 
 # Temporary files
 tmp/
