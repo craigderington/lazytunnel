@@ -32,6 +32,7 @@ type Server struct {
 	storage     tunnel.Storage
 	agents      *agent.Registry
 	coordinator *agent.Coordinator
+	version     string
 }
 
 // TLSConfig holds TLS configuration
@@ -49,6 +50,7 @@ type Config struct {
 	TLS         *TLSConfig        // Optional TLS configuration
 	RateLimiter *RateLimiter      // Optional rate limiter
 	WebSocket   *WebSocketManager // Optional WebSocket manager
+	Version     string            // Build version, stamped into config exports
 }
 
 // NewServer creates a new API server
@@ -86,6 +88,11 @@ func NewServer(ctx context.Context, config Config) *Server {
 		coord = agent.NewCoordinator(manager, config.Storage, registry)
 	}
 
+	version := config.Version
+	if version == "" {
+		version = "dev"
+	}
+
 	s := &Server{
 		addr:        config.Addr,
 		manager:     manager,
@@ -98,6 +105,7 @@ func NewServer(ctx context.Context, config Config) *Server {
 		storage:     config.Storage,
 		agents:      registry,
 		coordinator: coord,
+		version:     version,
 	}
 
 	s.setupRoutes()
@@ -166,6 +174,10 @@ func (s *Server) setupRoutes() {
 
 	// System logs (protected)
 	protected.HandleFunc("/logs", s.handleGetLogs).Methods("GET", "OPTIONS")
+
+	// Configuration backup and restore (protected)
+	protected.HandleFunc("/config/export", s.handleExportConfig).Methods("GET", "OPTIONS")
+	protected.HandleFunc("/config/import", s.handleImportConfig).Methods("POST", "OPTIONS")
 
 	// WebSocket endpoint for real-time updates (protected)
 	protected.HandleFunc("/ws", s.wsManager.HandleWebSocket)

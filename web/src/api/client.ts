@@ -5,6 +5,7 @@ import type {
   AgentInfo,
   CreateTunnelRequest,
   HealthResponse,
+  ImportReport,
   LoginRequest,
   LoginResponse,
   LogsResponse,
@@ -15,11 +16,13 @@ import type {
 export class APIClientError extends Error {
   status: number
   code?: string
+  body?: unknown
 
-  constructor(status: number, message: string, code?: string) {
+  constructor(status: number, message: string, code?: string, body?: unknown) {
     super(message)
     this.status = status
     this.code = code
+    this.body = body
   }
 }
 
@@ -28,7 +31,8 @@ async function parseError(response: Response): Promise<APIClientError> {
   return new APIClientError(
     response.status,
     body.message || response.statusText,
-    body.code
+    body.code,
+    body
   )
 }
 
@@ -116,6 +120,34 @@ export class LazytunnelClient {
 
   stopTunnel(id: string): Promise<Tunnel> {
     return this.request<Tunnel>(`/tunnels/${id}/stop`, { method: 'POST' })
+  }
+
+  async exportConfig(): Promise<Blob> {
+    const token = await getAuthToken()
+    const headers: Record<string, string> = {}
+    if (token) {
+      headers.Authorization = `Bearer ${token}`
+    }
+
+    const response = await fetch(apiUrl('/config/export'), { headers })
+    if (!response.ok) {
+      throw await parseError(response)
+    }
+    return response.blob()
+  }
+
+  importConfig(
+    archive: unknown,
+    opts: { replace?: boolean; dryRun?: boolean } = {}
+  ): Promise<ImportReport> {
+    const params = new URLSearchParams({ mode: opts.replace ? 'replace' : 'merge' })
+    if (opts.dryRun) {
+      params.set('dry_run', 'true')
+    }
+    return this.request<ImportReport>(`/config/import?${params}`, {
+      method: 'POST',
+      body: JSON.stringify(archive),
+    })
   }
 
   getTunnelMetrics(id: string): Promise<TunnelMetrics> {

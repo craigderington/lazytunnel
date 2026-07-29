@@ -91,6 +91,7 @@ func main() {
 		Storage: store,
 		Auth:    auth,
 		TLS:     tlsConfig,
+		Version: version,
 	})
 
 	go func() {

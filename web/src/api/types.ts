@@ -80,6 +80,20 @@ export interface APIError {
   code?: string
   message?: string
   timestamp?: string
+  // Present on a 500 IMPORT_PARTIAL_FAILURE response (internal/api/backup_handlers.go):
+  // the full plan/apply report, so a UI can show which tunnels landed.
+  report?: ImportReport
+  // Present on a 400 archive-validation failure: one entry per problem
+  // (internal/backup.EntryError), so a UI can point at every bad field at once
+  // instead of forcing a fix-one-resubmit-repeat cycle.
+  details?: ImportValidationDetail[]
+}
+
+export interface ImportValidationDetail {
+  index: number
+  name?: string
+  field: string
+  message: string
 }
 
 export interface LogsResponse {
@@ -93,4 +107,23 @@ export interface AgentInfo {
   status: string
   last_seen: string
   tunnel_count?: number
+}
+
+export interface ImportItem {
+  action: 'create' | 'update' | 'skip' | 'delete'
+  name: string
+  id: string
+  reason?: string
+  error?: string
+}
+
+export interface ImportReport {
+  mode: 'merge' | 'replace'
+  dry_run: boolean
+  items: ImportItem[]
+  created: number
+  updated: number
+  skipped: number
+  deleted: number
+  failed: number
 }
