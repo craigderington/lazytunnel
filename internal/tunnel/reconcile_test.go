@@ -385,15 +385,24 @@ func TestReconcileDoesNotAdoptTunnelGoneByTheTimeOfTheGetRecheck(t *testing.T) {
 	}
 }
 
-// TestReconcileDefersActionOnPendingTunnel is the I1 mitigation guard.
-// Stopping a tunnel while it is Pending (mid-connect) races with
-// connectTunnel's unlocked writes to session/multiSession/forwarder
-// (manager.go), which Tunnel.Stop later reads under t.mu — see the "Known
-// issue" section of the task report for the root cause. Reconcile must defer
-// action on a Pending tunnel rather than stop it, even when its storage row
-// has disappeared; a later pass, once the tunnel has settled into Active or
-// Failed, is responsible for cleaning it up.
-func TestReconcileDefersActionOnPendingTunnel(t *testing.T) {
+// TestReconcileDefersDropOnPendingTunnel is the I1 mitigation guard for the
+// dropTunnel path specifically. Stopping a tunnel while it is Pending
+// (mid-connect) races with connectTunnel's unlocked writes to
+// session/multiSession/forwarder (manager.go), which Tunnel.Stop later reads
+// under t.mu — see the "Known issue" section of the task report for the root
+// cause. dropTunnel must defer action on a Pending tunnel rather than stop
+// it, even when its storage row has disappeared; a later pass, once the
+// tunnel has settled into Active or Failed, is responsible for cleaning it
+// up.
+//
+// This spec deliberately keeps the manager's nodeAgentID empty (the default)
+// against AgentID "remote-agent", so RunOnThisNode is false and the tunnel is
+// only ever reached via the "missing from storage" path into dropTunnel —
+// never via applyDesired. See
+// TestReconcileDefersDesiredStateActionOnPendingTunnel below for the
+// applyDesired path, which is a materially different code path and was, for
+// one review round, un-covered by a test of this same name.
+func TestReconcileDefersDropOnPendingTunnel(t *testing.T) {
 	spec := remoteSpec("id-1", "prod-db", 5432)
 	store := newFakeStorage(spec)
 	m := managerWith(store)
@@ -424,6 +433,58 @@ func TestReconcileDefersActionOnPendingTunnel(t *testing.T) {
 	}
 	if got := tun.GetStatus().State; got != types.TunnelStatePending {
 		t.Fatalf("got state %s, want pending (deferred, untouched)", got)
+	}
+}
+
+// TestReconcileDefersDesiredStateActionOnPendingTunnel is the I1 mitigation
+// guard for applyDesired — the gap found in review round 2. applyDesired
+// counts Pending as "up", so without an explicit skip it would call m.Stop on
+// a mid-connect tunnel whenever desired_status is stopped and the tunnel runs
+// on this node. That is exactly the mid-connect Stop() the mitigation exists
+// to avoid, and — because applyDesired runs against every matching-node
+// tunnel on every pass, not just ones whose spec changed — it is the most
+// likely of the three sites to actually hit a Pending tunnel in practice
+// (e.g. right after a replace-mode import restarts several tunnels at once).
+//
+// SetNodeAgentID("remote-agent") is essential here: it is what makes
+// RunOnThisNode true for this spec and routes the tunnel into applyDesired at
+// all. TestReconcileDefersDropOnPendingTunnel above deliberately does NOT do
+// this — its spec is only ever reached via dropTunnel's "missing from
+// storage" path. A version of this test without SetNodeAgentID would be
+// vacuous: RunOnThisNode would be false, applyDesired would never look at the
+// tunnel, and the assertion would pass regardless of whether the Pending skip
+// in applyDesired exists — which is exactly how this gap escaped review
+// round 1.
+func TestReconcileDefersDesiredStateActionOnPendingTunnel(t *testing.T) {
+	spec := remoteSpec("id-1", "prod-db", 5432) // DesiredStatus defaults to Stopped
+	store := newFakeStorage(spec)
+	m := managerWith(store)
+	m.SetNodeAgentID("remote-agent")
+
+	// Install directly as Pending, bypassing a real connect, to simulate a
+	// tunnel that is mid-connect while storage's desired_status says stopped.
+	m.mu.Lock()
+	m.tunnels["id-1"] = &Tunnel{
+		Spec:      spec,
+		CreatedAt: spec.CreatedAt,
+		ctx:       context.Background(),
+		Status: &types.TunnelStatus{
+			TunnelID: "id-1",
+			State:    types.TunnelStatePending,
+		},
+	}
+	m.mu.Unlock()
+
+	if err := m.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+
+	tun, err := m.Get("id-1")
+	if err != nil {
+		t.Fatalf("tunnel id-1 missing: %v", err)
+	}
+	if got := tun.GetStatus().State; got != types.TunnelStatePending {
+		t.Fatalf("got state %s, want pending — applyDesired must defer, not call Stop, on a mid-connect tunnel", got)
 	}
 }
 

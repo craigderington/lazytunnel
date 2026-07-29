@@ -213,7 +213,10 @@ func (m *Manager) dropTunnel(id string) {
 	// tunnel.session / tunnel.multiSession / tunnel.forwarder with no lock,
 	// while Tunnel.Stop reads them under t.mu. Stopping here is exactly what
 	// triggers that race, so defer to a later reconcile pass instead, once
-	// the tunnel has settled into Active or Failed.
+	// the tunnel has settled into Active or Failed. The same check is applied
+	// in upsertTunnel and, for desired-state enforcement, in applyDesired —
+	// all three of Reconcile's paths to calling Tunnel.Stop skip a Pending
+	// tunnel rather than acting on it.
 	if status := tun.GetStatus(); status != nil && status.State == types.TunnelStatePending {
 		log.Info().Str("tunnel_id", id).Msg("reconcile: deferring drop, tunnel is mid-connect")
 		return
@@ -252,7 +255,9 @@ func (m *Manager) upsertTunnel(ctx context.Context, spec *types.TunnelSpec) {
 
 	if existed {
 		// I1 mitigation — see dropTunnel's comment and the report's "Known
-		// issue" section: narrows, does not close, the Stop/connectTunnel race.
+		// issue" section: narrows, does not close, the Stop/connectTunnel
+		// race. dropTunnel, upsertTunnel, and applyDesired's desired-state
+		// enforcement all skip a Pending tunnel rather than calling Stop on it.
 		if status := existing.GetStatus(); status != nil && status.State == types.TunnelStatePending {
 			log.Info().Str("tunnel_id", spec.ID).Msg("reconcile: deferring upsert, tunnel is mid-connect")
 			return
@@ -343,6 +348,16 @@ type desiredSnapshot struct {
 // DesiredStatus with no lock at all), so tun.Spec must be read exactly once,
 // while still under this function's own RLock, rather than dereferenced
 // again later.
+//
+// The Pending-tunnel mitigation described on dropTunnel and upsertTunnel
+// applies here too, and this is in fact its main path: this is the one call
+// site that reaches a live, matching-node tunnel by default (dropTunnel and
+// upsertTunnel only touch a tunnel when its spec is being added/changed/
+// removed, whereas applyDesired runs against every tunnel on this node, every
+// pass). A Pending tunnel already counts as "up" for the isUp check below;
+// skipping it here — rather than calling m.Stop on a tunnel that may still be
+// mid-connect — only defers the decision to a later pass and cannot leave the
+// tunnel in the wrong state.
 func (m *Manager) applyDesired(ctx context.Context) {
 	m.mu.RLock()
 	nodeID := m.nodeAgentID
@@ -367,7 +382,20 @@ func (m *Manager) applyDesired(ctx context.Context) {
 			state = status.State
 		}
 
-		isUp := state == types.TunnelStateActive || state == types.TunnelStatePending
+		// I1 mitigation (narrows, does not close, the race — see dropTunnel's
+		// comment and the task report's "Known issue" section for the root
+		// cause). A Pending tunnel is mid-connect: connectTunnel (manager.go)
+		// writes tunnel.session / tunnel.multiSession / tunnel.forwarder with
+		// no lock, while Tunnel.Stop reads them under t.mu. Calling m.Stop on
+		// it here — the case a stopped desired_status would otherwise hit,
+		// since Pending counts as isUp below — is exactly what triggers that
+		// race. Defer to a later pass instead.
+		if state == types.TunnelStatePending {
+			log.Info().Str("tunnel_id", s.id).Msg("reconcile: deferring desired-state action, tunnel is mid-connect")
+			continue
+		}
+
+		isUp := state == types.TunnelStateActive
 
 		switch {
 		case s.desiredUp && !isUp:
