@@ -1,11 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/craigderington/lazytunnel/internal/backup"
@@ -31,14 +33,27 @@ func (s *Server) handleExportConfig(w http.ResponseWriter, r *http.Request) {
 
 	filename := fmt.Sprintf("lazytunnel-backup-%s.json", archive.ExportedAt.Format("20060102-150405"))
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
-	w.WriteHeader(http.StatusOK)
-
-	enc := json.NewEncoder(w)
+	// Marshal into a buffer before writing any header, so the response can
+	// carry a Content-Length instead of falling back to chunked transfer
+	// encoding — without it, a browser download shows no size and no
+	// progress bar. json.Encoder.Encode can only fail once bytes are already
+	// on the wire and the connection has gone bad, so buffering first here
+	// doesn't trade away any error handling: nothing has been written yet.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(archive); err != nil {
 		s.logger.Error().Err(err).Msg("Failed to encode export")
+		s.InternalError(w, "Failed to encode export")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		s.logger.Error().Err(err).Msg("Failed to write export response")
 	}
 }
 
@@ -58,10 +73,23 @@ func (s *Server) handleImportConfig(w http.ResponseWriter, r *http.Request) {
 		s.BadRequest(w, err.Error())
 		return
 	}
-	dryRun := r.URL.Query().Get("dry_run") == "true"
+
+	dryRun, err := parseBoolQuery(r, "dry_run")
+	if err != nil {
+		s.BadRequest(w, err.Error())
+		return
+	}
 
 	var archive backup.Archive
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxImportBytes)).Decode(&archive); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			s.respondJSON(w, http.StatusRequestEntityTooLarge, map[string]interface{}{
+				"code":    "PAYLOAD_TOO_LARGE",
+				"message": fmt.Sprintf("archive exceeds the %d MiB import limit", maxImportBytes/(1<<20)),
+			})
+			return
+		}
 		s.BadRequest(w, "Invalid archive JSON: "+err.Error())
 		return
 	}
@@ -86,9 +114,11 @@ func (s *Server) handleImportConfig(w http.ResponseWriter, r *http.Request) {
 			// parseError reads body.message and falls back to statusText, so an
 			// "error" key would show the user a bare "Bad Request" instead of
 			// what is actually wrong with their file. "details" carries the
-			// per-entry specifics, matching the shape of APIError.
+			// per-entry specifics, matching the shape of APIError. The code
+			// uses the package's own ErrCodeValidation constant so a UI
+			// switching on body.code is not tripped up by casing.
 			s.respondJSON(w, http.StatusBadRequest, map[string]interface{}{
-				"code":    "validation_error",
+				"code":    string(ErrCodeValidation),
 				"message": fmt.Sprintf("archive validation failed: %d problem(s)", len(invalid.Errors)),
 				"details": invalid.Errors,
 			})
@@ -107,18 +137,36 @@ func (s *Server) handleImportConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Background context: the writes and the reconnects that follow must
-	// outlive the HTTP request, matching handleCreateTunnel.
+	// Background context: the writes and the reconcile below must outlive the
+	// HTTP request, matching handleCreateTunnel (handlers.go:149, "not request
+	// context!").
 	report, applyErr := backup.Apply(context.Background(), s.storage, plan)
 
-	// Converge the running fleet onto the newly stored desired state.
+	// Converge the running fleet onto the newly stored desired state. Also
+	// context.Background(), for the same reason as the Apply call above.
+	//
+	// Manager.Reconcile returns an error only when storage is nil or its List
+	// call fails; every per-tunnel Start/Stop failure inside applyDesired is
+	// logged there and never returned. So neither a nil error here nor the 200
+	// response below promises that every tunnel is now running as desired —
+	// only that the archive was written to storage and reconciliation was
+	// attempted.
 	if err := s.manager.Reconcile(context.Background()); err != nil {
 		s.logger.Error().Err(err).Msg("Failed to reconcile tunnels after import")
 	}
 
 	if applyErr != nil {
 		s.logger.Error().Err(applyErr).Msg("Import partially failed")
-		s.respondJSON(w, http.StatusInternalServerError, report)
+		// Carry a "message" alongside the report for the same reason as the
+		// validation-error path above: parseError only reads body.message, and
+		// without one the browser would show a bare "Internal Server Error"
+		// and discard the report — the only thing that names which tunnels
+		// landed and which did not.
+		s.respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"code":    "IMPORT_PARTIAL_FAILURE",
+			"message": fmt.Sprintf("import partially failed: %d of %d item(s)", report.Failed, len(report.Items)),
+			"report":  report,
+		})
 		return
 	}
 
@@ -131,4 +179,23 @@ func (s *Server) handleImportConfig(w http.ResponseWriter, r *http.Request) {
 		Msg("Configuration imported")
 
 	s.respondJSON(w, http.StatusOK, report)
+}
+
+// parseBoolQuery parses a boolean query parameter strictly: an absent
+// parameter is false, and any present value must be one strconv.ParseBool
+// accepts ("true"/"false", "1"/"0", "T"/"F", etc). A bare `== "true"` string
+// comparison would treat any other spelling ("1", "yes", "True") as false, so
+// a typo in the one parameter that means "don't touch anything" would
+// silently perform a real — and, combined with ?mode=replace, destructive —
+// import instead of a dry run.
+func parseBoolQuery(r *http.Request, name string) (bool, error) {
+	raw := r.URL.Query().Get(name)
+	if raw == "" {
+		return false, nil
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("invalid %s value %q: must be a boolean", name, raw)
+	}
+	return v, nil
 }

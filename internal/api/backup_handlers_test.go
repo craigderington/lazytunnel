@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -31,7 +33,16 @@ func newBackupTestStorage(specs ...*types.TunnelSpec) *backupTestStorage {
 	return s
 }
 
+// Save, Delete and Get all check ctx.Err() before doing anything, so tests
+// can tell a Background context apart from an already-cancelled request
+// context: a handler that mistakenly passed r.Context() into backup.Apply or
+// Manager.Reconcile (both of which call through to these) would observe
+// these calls fail instead of silently succeeding regardless of the context
+// it was given.
 func (s *backupTestStorage) Save(ctx context.Context, spec *types.TunnelSpec) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if _, exists := s.specs[spec.ID]; !exists {
 		s.order = append(s.order, spec.ID)
 	}
@@ -52,6 +63,9 @@ func (s *backupTestStorage) UpdateDesiredStatus(ctx context.Context, tunnelID st
 }
 
 func (s *backupTestStorage) Delete(ctx context.Context, tunnelID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	delete(s.specs, tunnelID)
 	for i, id := range s.order {
 		if id == tunnelID {
@@ -63,6 +77,9 @@ func (s *backupTestStorage) Delete(ctx context.Context, tunnelID string) error {
 }
 
 func (s *backupTestStorage) Get(ctx context.Context, tunnelID string) (*types.TunnelSpec, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if spec, ok := s.specs[tunnelID]; ok {
 		return spec, nil
 	}
@@ -102,6 +119,21 @@ func backupTestSpec(id, name string, port int) *types.TunnelSpec {
 	}
 }
 
+// failOnSaveStorage wraps backupTestStorage and fails Save for a chosen set
+// of tunnel names, so tests can exercise Apply's partial-failure path without
+// reaching into backup.Apply directly.
+type failOnSaveStorage struct {
+	*backupTestStorage
+	failNames map[string]bool
+}
+
+func (s *failOnSaveStorage) Save(ctx context.Context, spec *types.TunnelSpec) error {
+	if s.failNames[spec.Name] {
+		return fmt.Errorf("simulated write failure for %s", spec.Name)
+	}
+	return s.backupTestStorage.Save(ctx, spec)
+}
+
 func newBackupTestServer(t *testing.T, store *backupTestStorage) *Server {
 	t.Helper()
 	return NewServer(context.Background(), Config{
@@ -124,6 +156,9 @@ func TestHandleExportConfigReturnsArchive(t *testing.T) {
 	if cd := rec.Header().Get("Content-Disposition"); cd == "" {
 		t.Error("expected a Content-Disposition header so the UI can download by link")
 	}
+	if cl := rec.Header().Get("Content-Length"); cl != strconv.Itoa(rec.Body.Len()) {
+		t.Errorf("got Content-Length %q, want %d (the actual body size) — without it the response is chunked and a browser download shows no size or progress bar", cl, rec.Body.Len())
+	}
 
 	var archive backup.Archive
 	if err := json.Unmarshal(rec.Body.Bytes(), &archive); err != nil {
@@ -132,8 +167,23 @@ func TestHandleExportConfigReturnsArchive(t *testing.T) {
 	if archive.Version != backup.SchemaVersion {
 		t.Errorf("got version %d, want %d", archive.Version, backup.SchemaVersion)
 	}
+	if archive.Source != "lazytunnel/test" {
+		t.Errorf("got Source %q, want %q (stamped from Config.Version)", archive.Source, "lazytunnel/test")
+	}
 	if len(archive.Tunnels) != 1 || archive.Tunnels[0].Name != "prod-db" {
 		t.Fatalf("unexpected tunnels in archive: %+v", archive.Tunnels)
+	}
+}
+
+func TestNewServerDefaultsVersionToDev(t *testing.T) {
+	srv := NewServer(context.Background(), Config{
+		Addr:   ":0",
+		Logger: zerolog.Nop(),
+		// Version deliberately omitted.
+	})
+
+	if srv.version != "dev" {
+		t.Errorf("got version %q, want %q when Config.Version is empty", srv.version, "dev")
 	}
 }
 
@@ -232,6 +282,221 @@ func TestHandleImportConfigDryRunWritesNothing(t *testing.T) {
 	}
 }
 
+func TestHandleImportConfigParsesDryRunStrictly(t *testing.T) {
+	// Query.Get("dry_run") == "true" treats any other spelling as false, so a
+	// typo in the one parameter that means "don't touch anything" — combined
+	// with ?mode=replace — would silently perform a real, destructive import.
+	// strconv.ParseBool must be used instead, and an unparseable value must be
+	// rejected rather than silently treated as false.
+	tests := []struct {
+		name       string
+		query      string
+		wantStatus int
+		wantDryRun bool
+	}{
+		{name: "absent defaults to false", query: "", wantStatus: http.StatusOK, wantDryRun: false},
+		{name: "true", query: "?dry_run=true", wantStatus: http.StatusOK, wantDryRun: true},
+		{name: "1", query: "?dry_run=1", wantStatus: http.StatusOK, wantDryRun: true},
+		{name: "TRUE", query: "?dry_run=TRUE", wantStatus: http.StatusOK, wantDryRun: true},
+		{name: "false", query: "?dry_run=false", wantStatus: http.StatusOK, wantDryRun: false},
+		{name: "0", query: "?dry_run=0", wantStatus: http.StatusOK, wantDryRun: false},
+		{name: "yes is rejected, not silently treated as a real import", query: "?dry_run=yes", wantStatus: http.StatusBadRequest},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newBackupTestStorage()
+			srv := newBackupTestServer(t, store)
+			archive := backup.Archive{
+				Version: backup.SchemaVersion,
+				Tunnels: []backup.TunnelEntry{backup.EntryFromSpec(backupTestSpec("", "dry-run-probe", 6100))},
+			}
+
+			rec := postImport(t, srv, tc.query, archive)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("got status %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if tc.wantStatus != http.StatusOK {
+				return
+			}
+
+			report := decodeReport(t, rec)
+			if report.DryRun != tc.wantDryRun {
+				t.Errorf("got DryRun=%v, want %v", report.DryRun, tc.wantDryRun)
+			}
+			wrote := len(store.specs) == 1
+			if tc.wantDryRun && wrote {
+				t.Error("dry_run=true must not write")
+			}
+			if !tc.wantDryRun && !wrote {
+				t.Error("dry_run=false must write")
+			}
+		})
+	}
+}
+
+func TestHandleImportConfigRejectsOversizedBodyWith413(t *testing.T) {
+	srv := newBackupTestServer(t, newBackupTestStorage())
+
+	// A single invalid byte would fail the JSON syntax check on the first
+	// token, long before MaxBytesReader's limit is ever reached. To actually
+	// exercise the size limit, the payload must be syntactically valid enough
+	// that the decoder keeps reading through it — a giant string value does
+	// that, since the decoder must consume it up to the closing quote.
+	oversized := append([]byte(`{"source":"`), bytes.Repeat([]byte("a"), maxImportBytes+1)...)
+	oversized = append(oversized, []byte(`"}`)...)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/config/import", bytes.NewReader(oversized))
+	rec := httptest.NewRecorder()
+	srv.handleImportConfig(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("got status %d, want 413: %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if strings.Contains(body.Message, "http: request body too large") {
+		t.Error("message leaks the raw Go MaxBytesReader string instead of stating the limit in plain language")
+	}
+	if !strings.Contains(body.Message, "10 MiB") {
+		t.Errorf("message should state the 10 MiB limit, got %q", body.Message)
+	}
+}
+
+func TestHandleImportConfigPartialFailureIncludesMessageAndReport(t *testing.T) {
+	// web/src/api/client.ts's parseError reads body.message, falling back to
+	// the bare statusText "Internal Server Error" otherwise — which would
+	// also discard the report, the only thing that names which tunnels
+	// landed and which did not on a partial failure.
+	store := &failOnSaveStorage{
+		backupTestStorage: newBackupTestStorage(),
+		failNames:         map[string]bool{"will-fail": true},
+	}
+	srv := NewServer(context.Background(), Config{
+		Addr:    ":0",
+		Logger:  zerolog.Nop(),
+		Storage: store,
+		Version: "test",
+	})
+
+	archive := backup.Archive{
+		Version: backup.SchemaVersion,
+		Tunnels: []backup.TunnelEntry{
+			backup.EntryFromSpec(backupTestSpec("", "will-fail", 6200)),
+			backup.EntryFromSpec(backupTestSpec("", "will-succeed", 6201)),
+		},
+	}
+
+	rec := postImport(t, srv, "", archive)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("got status %d, want 500: %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Message string        `json:"message"`
+		Report  backup.Report `json:"report"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if body.Message == "" {
+		t.Error("500 response must carry a non-empty message field")
+	}
+	if len(body.Report.Items) != 2 {
+		t.Fatalf("500 response must still carry the full report, got %d item(s)", len(body.Report.Items))
+	}
+	if body.Report.Failed != 1 {
+		t.Errorf("got Failed %d, want 1", body.Report.Failed)
+	}
+	landed := false
+	for _, item := range body.Report.Items {
+		if item.Name == "will-succeed" && item.Error == "" {
+			landed = true
+		}
+	}
+	if !landed {
+		t.Error("report should show will-succeed landed even though will-fail did not")
+	}
+}
+
+func TestHandleImportConfigAdoptsImportedTunnelViaReconcile(t *testing.T) {
+	// Apply only writes to storage; Manager.Get only finds a tunnel that
+	// Reconcile has adopted into its in-memory map via upsertTunnel. If
+	// handleImportConfig stopped calling Reconcile after Apply, this tunnel
+	// would land in storage but stay invisible to the manager, and this
+	// lookup would fail.
+	store := newBackupTestStorage()
+	srv := newBackupTestServer(t, store)
+
+	archive := backup.Archive{
+		Version: backup.SchemaVersion,
+		Tunnels: []backup.TunnelEntry{backup.EntryFromSpec(backupTestSpec("", "reconciled-tunnel", 9090))},
+	}
+
+	rec := postImport(t, srv, "", archive)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	report := decodeReport(t, rec)
+	if len(report.Items) != 1 {
+		t.Fatalf("expected exactly one report item, got %d", len(report.Items))
+	}
+	id := report.Items[0].ID
+
+	if _, err := srv.manager.Get(id); err != nil {
+		t.Fatalf("manager does not know about imported tunnel %s — Reconcile did not run after import: %v", id, err)
+	}
+}
+
+func TestHandleImportConfigWritesAndReconcilesWithBackgroundContext(t *testing.T) {
+	// backupTestStorage.Save and .Get both fail if given a context whose
+	// Err() is non-nil. Simulating a client that disconnects before the
+	// handler finishes pins that Apply and Reconcile use context.Background()
+	// rather than r.Context(): if either call site were swapped, the write
+	// (Apply -> Save) or the adoption (Reconcile -> Get, in its "isNew"
+	// re-verify branch) would fail against the already-cancelled context,
+	// even though every other test in this file passes an uncancelled
+	// context and would not catch the regression.
+	store := newBackupTestStorage()
+	srv := newBackupTestServer(t, store)
+
+	archive := backup.Archive{
+		Version: backup.SchemaVersion,
+		Tunnels: []backup.TunnelEntry{backup.EntryFromSpec(backupTestSpec("", "outlives-request", 7000))},
+	}
+	body, err := json.Marshal(archive)
+	if err != nil {
+		t.Fatalf("failed to marshal archive: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the request context is already dead before the handler runs
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/config/import", bytes.NewReader(body)).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	srv.handleImportConfig(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200 even though the request context was already cancelled: %s", rec.Code, rec.Body.String())
+	}
+	if len(store.specs) != 1 {
+		t.Fatalf("import should have written to storage via a Background context, got %d stored tunnels", len(store.specs))
+	}
+
+	report := decodeReport(t, rec)
+	if len(report.Items) != 1 {
+		t.Fatalf("expected exactly one report item, got %d", len(report.Items))
+	}
+	if _, err := srv.manager.Get(report.Items[0].ID); err != nil {
+		t.Fatalf("manager should have adopted the tunnel via a Background-context Reconcile even though the request was cancelled: %v", err)
+	}
+}
+
 func TestHandleImportConfigRejectsBadVersion(t *testing.T) {
 	srv := newBackupTestServer(t, newBackupTestStorage())
 
@@ -295,6 +560,7 @@ func TestHandleImportConfigReturnsValidationDetails(t *testing.T) {
 	}
 
 	var body struct {
+		Code    string              `json:"code"`
 		Message string              `json:"message"`
 		Details []backup.EntryError `json:"details"`
 	}
@@ -308,6 +574,9 @@ func TestHandleImportConfigReturnsValidationDetails(t *testing.T) {
 	// an empty message here means the UI shows a bare "Bad Request".
 	if body.Message == "" {
 		t.Error("response must carry a non-empty message field or the web UI cannot show why the import failed")
+	}
+	if body.Code != string(ErrCodeValidation) {
+		t.Errorf("got code %q, want %q (the package's own constant, so a UI switching on it isn't tripped by casing)", body.Code, ErrCodeValidation)
 	}
 }
 
