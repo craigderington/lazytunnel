@@ -2350,6 +2350,7 @@ func TestHandleImportConfigReturnsValidationDetails(t *testing.T) {
 	}
 
 	var body struct {
+		Message string              `json:"message"`
 		Details []backup.EntryError `json:"details"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -2357,6 +2358,11 @@ func TestHandleImportConfigReturnsValidationDetails(t *testing.T) {
 	}
 	if len(body.Details) < 2 {
 		t.Fatalf("got %d details, want every problem reported at once", len(body.Details))
+	}
+	// web/src/api/client.ts reads body.message and falls back to statusText, so
+	// an empty message here means the UI shows a bare "Bad Request".
+	if body.Message == "" {
+		t.Error("response must carry a non-empty message field or the web UI cannot show why the import failed")
 	}
 }
 
@@ -2478,8 +2484,14 @@ func (s *Server) handleImportConfig(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var invalid backup.ArchiveInvalidError
 		if errors.As(err, &invalid) {
+			// The key must be "message", not "error": web/src/api/client.ts's
+			// parseError reads body.message and falls back to statusText, so an
+			// "error" key would show the user a bare "Bad Request" instead of
+			// what is actually wrong with their file. "details" carries the
+			// per-entry specifics, matching the shape of APIError.
 			s.respondJSON(w, http.StatusBadRequest, map[string]interface{}{
-				"error":   "archive validation failed",
+				"code":    "validation_error",
+				"message": fmt.Sprintf("archive validation failed: %d problem(s)", len(invalid.Errors)),
 				"details": invalid.Errors,
 			})
 			return
