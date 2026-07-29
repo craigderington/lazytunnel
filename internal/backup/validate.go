@@ -34,6 +34,14 @@ var (
 // remote_host and remote_port are only required for local and remote tunnels,
 // so any archive this package exports can always be re-imported.
 func ValidateArchive(a *Archive) []EntryError {
+	if a == nil {
+		return []EntryError{{
+			Index: -1,
+			Field: "archive",
+			Msg:   "archive is empty or missing",
+		}}
+	}
+
 	if a.Version != SchemaVersion {
 		return []EntryError{{
 			Index: -1,

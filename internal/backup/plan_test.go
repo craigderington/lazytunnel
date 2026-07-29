@@ -218,7 +218,12 @@ func TestPlanRejectsInvalidArchive(t *testing.T) {
 	}
 }
 
-func TestPlanOfUnchangedArchiveIsAllSkip(t *testing.T) {
+// TestPlanDoesNotMutateItsInputs re-runs Plan against the same unchanged
+// inputs and checks round 2 is identical to round 1. Plan is pure, so this
+// proves Plan does not mutate current or archive as a side effect of
+// planning — it does NOT by itself prove end-to-end idempotence of an actual
+// restore (that requires Apply, which is Task 5's responsibility).
+func TestPlanDoesNotMutateItsInputs(t *testing.T) {
 	stored := []*types.TunnelSpec{sampleSpec()}
 	archive := archiveOf(EntryFromSpec(stored[0]))
 
@@ -229,7 +234,7 @@ func TestPlanOfUnchangedArchiveIsAllSkip(t *testing.T) {
 		}
 		for _, item := range plan.Items {
 			if item.Action != ActionSkip {
-				t.Fatalf("round %d: got action %q for %q, want skip — import must be idempotent",
+				t.Fatalf("round %d: got action %q for %q, want skip — Plan must not mutate its inputs across calls",
 					round, item.Action, item.Name)
 			}
 		}
@@ -258,5 +263,101 @@ func TestParseMode(t *testing.T) {
 	}
 	if _, err := ParseMode("obliterate"); err == nil {
 		t.Error("expected an error for an unknown mode, got nil")
+	}
+}
+
+func TestPlanNilArchiveReturnsArchiveInvalidErrorNotPanic(t *testing.T) {
+	_, err := Plan(nil, nil, testOptions(ModeMerge))
+	if err == nil {
+		t.Fatal("expected an error for a nil archive, got nil")
+	}
+	var invalid ArchiveInvalidError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("got %T, want ArchiveInvalidError", err)
+	}
+	if len(invalid.Errors) == 0 {
+		t.Error("ArchiveInvalidError must carry the underlying entry errors")
+	}
+}
+
+func TestPlanTrimsNameSoWhitespaceMatchesStoredTunnel(t *testing.T) {
+	stored := sampleSpec()
+	entry := EntryFromSpec(stored)
+	entry.Name = "  " + entry.Name + "  " // hand-edited archive with stray whitespace
+
+	plan, err := Plan([]*types.TunnelSpec{stored}, archiveOf(entry), testOptions(ModeMerge))
+	if err != nil {
+		t.Fatalf("Plan returned error: %v", err)
+	}
+	if len(plan.Items) != 1 {
+		t.Fatalf("got %d items, want 1 — untrimmed whitespace must match the stored tunnel, not create a second one", len(plan.Items))
+	}
+	item := itemFor(t, plan, "prod-db")
+	if item.Action != ActionSkip {
+		t.Fatalf("got action %q, want skip — untrimmed whitespace around an otherwise-identical name must still match", item.Action)
+	}
+	if item.ID != stored.ID {
+		t.Errorf("got ID %q, want the stored ID %q — untrimmed whitespace must not churn identity", item.ID, stored.ID)
+	}
+}
+
+func TestPlanSkipsWhenBothSidesOmitLocalBindAddress(t *testing.T) {
+	stored := sampleSpec()
+	stored.LocalBindAddress = ""
+
+	entry := EntryFromSpec(stored)
+	entry.LocalBindAddress = "" // hand-written archive omitting the field
+
+	plan, err := Plan([]*types.TunnelSpec{stored}, archiveOf(entry), testOptions(ModeMerge))
+	if err != nil {
+		t.Fatalf("Plan returned error: %v", err)
+	}
+	if item := itemFor(t, plan, "prod-db"); item.Action != ActionSkip {
+		t.Fatalf("got action %q, want skip — an omitted local_bind_address must normalize the same way on both sides, not read as a change", item.Action)
+	}
+}
+
+func TestPlanTwoNewEntriesWithSameArchiveIDRegeneratesSecond(t *testing.T) {
+	a := validEntry("staging-api")
+	a.ID = "dup-id"
+	b := validEntry("staging-worker")
+	b.ID = "dup-id"
+
+	plan, err := Plan(nil, archiveOf(a, b), testOptions(ModeMerge))
+	if err != nil {
+		t.Fatalf("Plan returned error: %v", err)
+	}
+	first := itemFor(t, plan, "staging-api")
+	second := itemFor(t, plan, "staging-worker")
+	if first.Spec.ID != "dup-id" {
+		t.Errorf("got first ID %q, want dup-id — the first claimant keeps the archive's ID", first.Spec.ID)
+	}
+	if second.Spec.ID == "dup-id" {
+		t.Fatal("second entry must not collide with the first entry's ID")
+	}
+	if second.Spec.ID != "generated-id-1" {
+		t.Errorf("got second ID %q, want generated-id-1", second.Spec.ID)
+	}
+}
+
+func TestPlanLaterEntryCollidingWithMintedIDRegenerates(t *testing.T) {
+	a := validEntry("staging-api") // no ID -> mints "generated-id-1"
+	b := validEntry("staging-worker")
+	b.ID = "generated-id-1" // collides with what 'a' is about to mint
+
+	plan, err := Plan(nil, archiveOf(a, b), testOptions(ModeMerge))
+	if err != nil {
+		t.Fatalf("Plan returned error: %v", err)
+	}
+	first := itemFor(t, plan, "staging-api")
+	second := itemFor(t, plan, "staging-worker")
+	if first.Spec.ID != "generated-id-1" {
+		t.Fatalf("got first ID %q, want generated-id-1", first.Spec.ID)
+	}
+	if second.Spec.ID == first.Spec.ID {
+		t.Fatal("second entry's explicit ID collided with a minted ID and must be regenerated, not allowed to clobber it")
+	}
+	if second.Spec.ID != "generated-id-2" {
+		t.Errorf("got second ID %q, want generated-id-2", second.Spec.ID)
 	}
 }

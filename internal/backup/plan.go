@@ -114,16 +114,22 @@ func Plan(current []*types.TunnelSpec, archive *Archive, opts PlanOptions) (*Imp
 		usedIDs[spec.ID] = true
 	}
 
-	plan := &ImportPlan{Mode: opts.Mode}
+	plan := &ImportPlan{Mode: opts.Mode, Items: []PlanItem{}}
 	matched := make(map[string]bool, len(archive.Tunnels))
 
 	for _, entry := range archive.Tunnels {
 		spec := SpecFromEntry(entry)
-		existing, found := byName[entry.Name]
+		// SpecFromEntry trims the name, so matching against the stored specs
+		// (also keyed on their, already-trimmed, Name) agrees with
+		// ValidateArchive's trimmed empty/length/duplicate checks by
+		// construction. Matching on the raw, untrimmed entry.Name would let
+		// " prod-db" and "prod-db" pass validation as distinct names yet
+		// silently churn the same tunnel's identity.
+		existing, found := byName[spec.Name]
 
 		if !found {
 			id := entry.ID
-			if id == "" || usedIDs[id] {
+			for id == "" || usedIDs[id] {
 				id = opts.NewID()
 			}
 			usedIDs[id] = true
@@ -144,7 +150,7 @@ func Plan(current []*types.TunnelSpec, archive *Archive, opts PlanOptions) (*Imp
 			continue
 		}
 
-		matched[entry.Name] = true
+		matched[spec.Name] = true
 
 		// An existing tunnel keeps its identity across a restore.
 		spec.ID = existing.ID

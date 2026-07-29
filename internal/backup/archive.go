@@ -3,6 +3,7 @@
 package backup
 
 import (
+	"strings"
 	"time"
 
 	"github.com/craigderington/lazytunnel/pkg/types"
@@ -76,16 +77,28 @@ func EntryFromSpec(spec *types.TunnelSpec) TunnelEntry {
 		desired = string(types.DesiredStatusStopped)
 	}
 
+	// The forwarder (internal/tunnel/forward.go) already treats an empty
+	// LocalBindAddress as "0.0.0.0" at connect time. Emitting "" here would
+	// hide that network-wide exposure from anyone reading or hand-editing the
+	// archive. Normalizing to the explicit effective value makes the exposure
+	// visible without changing runtime behaviour — and every tunnel in the
+	// live database currently stores "", so defaulting to 127.0.0.1 instead
+	// would misrepresent (and, on re-import, narrow) all of them.
+	bindAddr := spec.LocalBindAddress
+	if bindAddr == "" {
+		bindAddr = "0.0.0.0"
+	}
+
 	return TunnelEntry{
 		ID:               spec.ID,
-		Name:             spec.Name,
+		Name:             strings.TrimSpace(spec.Name),
 		Owner:            spec.Owner,
 		AgentID:          spec.AgentID,
 		DesiredStatus:    desired,
 		Type:             string(spec.Type),
 		Hops:             hops,
 		LocalPort:        spec.LocalPort,
-		LocalBindAddress: spec.LocalBindAddress,
+		LocalBindAddress: bindAddr,
 		RemoteHost:       spec.RemoteHost,
 		RemotePort:       spec.RemotePort,
 		AutoReconnect:    spec.AutoReconnect,
@@ -117,16 +130,25 @@ func SpecFromEntry(e TunnelEntry) *types.TunnelSpec {
 		desired = string(types.DesiredStatusStopped)
 	}
 
+	// Mirror EntryFromSpec's normalization: an omitted local_bind_address in a
+	// hand-edited archive must resolve to the same explicit "0.0.0.0" the
+	// forwarder already falls back to at connect time (internal/tunnel/forward.go),
+	// not to "" and not to 127.0.0.1 — see EntryFromSpec for the full rationale.
+	bindAddr := e.LocalBindAddress
+	if bindAddr == "" {
+		bindAddr = "0.0.0.0"
+	}
+
 	return &types.TunnelSpec{
 		ID:               e.ID,
-		Name:             e.Name,
+		Name:             strings.TrimSpace(e.Name),
 		Owner:            e.Owner,
 		AgentID:          e.AgentID,
 		DesiredStatus:    types.DesiredStatus(desired),
 		Type:             types.TunnelType(e.Type),
 		Hops:             hops,
 		LocalPort:        e.LocalPort,
-		LocalBindAddress: e.LocalBindAddress,
+		LocalBindAddress: bindAddr,
 		RemoteHost:       e.RemoteHost,
 		RemotePort:       e.RemotePort,
 		AutoReconnect:    e.AutoReconnect,

@@ -99,3 +99,27 @@ func TestSpecFromEntryDefaultsDesiredStatusToStopped(t *testing.T) {
 		t.Fatalf("got DesiredStatus %q, want stopped", spec.DesiredStatus)
 	}
 }
+
+// The forwarder (internal/tunnel/forward.go:106,619) already treats an empty
+// LocalBindAddress as "0.0.0.0" at connect time. EntryFromSpec and
+// SpecFromEntry must both normalize "" to the explicit "0.0.0.0" rather than
+// leaving it blank or defaulting to 127.0.0.1: leaving it blank would hide a
+// network-wide exposure from a hand-edited archive, and 127.0.0.1 would
+// silently narrow every tunnel in the live database (all 8 currently store
+// "") on first re-import, breaking off-box access that exists today.
+func TestEntryFromSpecNormalizesEmptyLocalBindAddressToExplicitZero(t *testing.T) {
+	spec := sampleSpec()
+	spec.LocalBindAddress = ""
+
+	entry := EntryFromSpec(spec)
+	if entry.LocalBindAddress != "0.0.0.0" {
+		t.Fatalf("got LocalBindAddress %q, want 0.0.0.0", entry.LocalBindAddress)
+	}
+}
+
+func TestSpecFromEntryNormalizesEmptyLocalBindAddressToExplicitZero(t *testing.T) {
+	spec := SpecFromEntry(TunnelEntry{Name: "x", Type: "local"}) // omits local_bind_address entirely
+	if spec.LocalBindAddress != "0.0.0.0" {
+		t.Fatalf("got LocalBindAddress %q, want 0.0.0.0", spec.LocalBindAddress)
+	}
+}

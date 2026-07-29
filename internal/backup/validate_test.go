@@ -124,3 +124,16 @@ func TestValidateArchiveAcceptsEmptyTunnelList(t *testing.T) {
 		t.Fatalf("expected no errors, got %v", fieldsWithErrors(errs))
 	}
 }
+
+func TestValidateArchiveRejectsNilArchive(t *testing.T) {
+	// A JSON body of literal `null` decodes to a nil *Archive with no decode
+	// error, so ValidateArchive must handle nil itself rather than panicking
+	// on a.Version.
+	errs := ValidateArchive(nil)
+	if len(errs) != 1 {
+		t.Fatalf("got %d errors, want 1: %v", len(errs), errs)
+	}
+	if errs[0].Index != -1 || errs[0].Field != "archive" {
+		t.Errorf("got %+v, want Index -1, Field \"archive\"", errs[0])
+	}
+}
