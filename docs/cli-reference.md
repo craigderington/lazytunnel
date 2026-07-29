@@ -249,7 +249,7 @@ Plan:
   update  prod-db
   DELETE  old-bastion  not present in archive
 
-1 updated, 0 created, 0 skipped, 1 deleted
+0 created, 1 updated, 0 skipped, 1 deleted
 
 --replace deletes 1 tunnel(s). Continue? [y/N]
 ```

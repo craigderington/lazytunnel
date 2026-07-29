@@ -316,8 +316,23 @@ before importing it back.
 ```
 
 **Error** `503 Service Unavailable`: persistent storage is not configured.
+```json
+{
+  "code": "SERVICE_UNAVAILABLE",
+  "message": "Persistent storage is not configured",
+  "timestamp": "2026-07-29T12:00:00Z"
+}
+```
 
-**Error** `500 Internal Server Error`: the export or its JSON encoding failed.
+**Error** `500 Internal Server Error`: reading the stored tunnels failed, or
+encoding the archive as JSON failed. The message names which step failed:
+```json
+{
+  "code": "INTERNAL_ERROR",
+  "message": "Failed to export configuration",
+  "timestamp": "2026-07-29T12:00:00Z"
+}
+```
 
 ### Import Configuration
 
@@ -367,10 +382,13 @@ Responses:
     "message": "archive validation failed: 2 problem(s)",
     "details": [
       { "index": 0, "name": "prod-db", "field": "remote_host", "message": "must not be empty" },
-      { "index": 1, "name": "", "field": "name", "message": "must not be empty" }
+      { "index": 1, "field": "name", "message": "must not be empty" }
     ]
   }
   ```
+  `name` is tagged `json:"name,omitempty"` on the server's `EntryError`
+  type, so an entry with no name (as in the second item above) omits the
+  `name` key entirely rather than serializing it as `""`.
 - `409 Conflict` — two **stored** tunnels have names that differ only by
   surrounding whitespace, making the archive entry ambiguous to match. This is
   a problem with server state, not with the uploaded file; the message names
@@ -378,9 +396,20 @@ Responses:
   differ only by surrounding whitespace; rename one before importing`.
 - `413 Payload Too Large` — the request body exceeded the 10 MiB import
   limit. Body: `{"code": "PAYLOAD_TOO_LARGE", "message": "archive exceeds the 10 MiB import limit"}`.
-- `500 Internal Server Error` — a write failed partway through apply. The
-  body carries the full report so the caller can see exactly which tunnels
-  landed:
+- `500 Internal Server Error` — reading the currently stored tunnels failed
+  **before planning began**: nothing was checked and nothing was written.
+  This is the plain error envelope, with no `report` field at all:
+  ```json
+  {
+    "code": "INTERNAL_ERROR",
+    "message": "Failed to read existing tunnels",
+    "timestamp": "2026-07-29T12:00:00Z"
+  }
+  ```
+- `500 Internal Server Error` — planning succeeded but a write failed
+  partway through apply, so some items already landed. The body carries the
+  full report so the caller can see exactly which tunnels made it — this is
+  the shape to check for a `report` field before assuming nothing happened:
   ```json
   {
     "code": "IMPORT_PARTIAL_FAILURE",
