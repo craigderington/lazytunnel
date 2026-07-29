@@ -16,7 +16,8 @@
 - The archive uses its own DTO (`backup.TunnelEntry`), **never** `types.TunnelSpec` directly. `TunnelSpec.KeepAlive` is a `time.Duration` that marshals to raw nanoseconds, and `TunnelSpec.Auth` / `.Policy` are never persisted by `internal/storage/sqlite.go`.
 - Tunnels are matched on **`name`**, the `UNIQUE` column in the `tunnels` table — never on ID.
 - An existing tunnel keeps its `ID`, `Owner`, and `CreatedAt` across an import. A restore must not reassign ownership or churn IDs that `web/src/store/orderStore.ts` keys its drag ordering on.
-- No new Go or npm dependencies. Everything needed is already in `go.mod` and `web/package.json`.
+- No new Go dependencies. Everything needed is already in `go.mod`.
+- No new npm **runtime** dependencies. Two dev dependencies are authorised for Task 10's component tests — `jsdom` and `@testing-library/react` — because `web/vite.config.ts` currently pins `test.environment: 'node'` and `test.include: ['src/**/*.test.ts']`, neither of which can render a React component. Nothing in `web/src/` outside a `*.test.tsx` file may import them.
 - All new API routes go on the existing `protected` subrouter in `internal/api/server.go`, inheriting auth and rate limiting.
 - Import is **validate-then-write, not transactional**. `tunnel.Storage` exposes no transaction API. Never describe it as atomic in code comments, docs, or UI copy.
 - Go tests run with `go test ./...`; frontend tests with `cd web && npm run test:run`.
@@ -2559,13 +2560,143 @@ git commit -m "feat(api): config export and import endpoints"
 
 **Files:**
 - Create: `internal/cli/export.go`
+- Test: `internal/cli/export_test.go`
 - Modify: `internal/cli/root.go` (register `exportCmd`)
 
 **Interfaces:**
 - Consumes: the `GET /api/v1/config/export` route from Task 7; `viper.GetString("server")` as in `internal/cli/list.go`.
 - Produces: `exportCmd` (`tunnelctl export [-o FILE]`).
 
-- [ ] **Step 1: Write the implementation**
+- [ ] **Step 1: Write the failing test**
+
+Create `internal/cli/export_test.go`:
+
+```go
+package cli
+
+import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+)
+
+const sampleArchiveJSON = `{"version":1,"exported_at":"2026-07-29T08:40:12Z","source":"lazytunnel/test","tunnels":[]}`
+
+// exportTestServer stands in for the API, asserting the command calls the
+// right path.
+func exportTestServer(t *testing.T, status int, body string) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/config/export" {
+			t.Errorf("got path %q, want /api/v1/config/export", r.URL.Path)
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// callExport runs the command against a stub server, restoring the global
+// flag state afterwards so tests do not leak into each other.
+func callExport(t *testing.T, serverURL, output string) (string, error) {
+	t.Helper()
+
+	prevServer := viper.GetString("server")
+	viper.Set("server", serverURL)
+	t.Cleanup(func() { viper.Set("server", prevServer) })
+
+	prevOutput := exportOutput
+	exportOutput = output
+	t.Cleanup(func() { exportOutput = prevOutput })
+
+	var stdout, stderr bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+
+	return stdout.String(), runExport(cmd, nil)
+}
+
+func TestExportWritesArchiveToStdout(t *testing.T) {
+	ts := exportTestServer(t, http.StatusOK, sampleArchiveJSON)
+
+	out, err := callExport(t, ts.URL, "")
+	if err != nil {
+		t.Fatalf("runExport returned error: %v", err)
+	}
+	if out != sampleArchiveJSON {
+		t.Fatalf("stdout mismatch:\n got %s\nwant %s", out, sampleArchiveJSON)
+	}
+}
+
+func TestExportWritesFileWithRestrictivePermissions(t *testing.T) {
+	ts := exportTestServer(t, http.StatusOK, sampleArchiveJSON)
+	path := filepath.Join(t.TempDir(), "backup.json")
+
+	out, err := callExport(t, ts.URL, path)
+	if err != nil {
+		t.Fatalf("runExport returned error: %v", err)
+	}
+	if out != "" {
+		t.Errorf("stdout should be empty when -o is used, got %q", out)
+	}
+
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read the written file: %v", err)
+	}
+	if string(contents) != sampleArchiveJSON {
+		t.Errorf("file contents mismatch:\n got %s\nwant %s", contents, sampleArchiveJSON)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("failed to stat the written file: %v", err)
+	}
+	// The archive lists hostnames, usernames and key paths — it must not be
+	// world-readable.
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("got file mode %o, want 600", perm)
+	}
+}
+
+func TestExportReportsServerErrors(t *testing.T) {
+	ts := exportTestServer(t, http.StatusInternalServerError, `{"error":"storage unavailable"}`)
+
+	if _, err := callExport(t, ts.URL, ""); err == nil {
+		t.Fatal("expected an error for a 500 response, got nil")
+	} else if !strings.Contains(err.Error(), "storage unavailable") {
+		t.Errorf("error should surface the server's message, got %q", err)
+	}
+}
+
+func TestExportDoesNotWriteFileOnServerError(t *testing.T) {
+	ts := exportTestServer(t, http.StatusInternalServerError, `{"error":"boom"}`)
+	path := filepath.Join(t.TempDir(), "backup.json")
+
+	if _, err := callExport(t, ts.URL, path); err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("a failed export must not leave a file behind")
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/cli/ -run TestExport -v`
+Expected: FAIL — `undefined: exportOutput`, `undefined: runExport`.
+
+- [ ] **Step 3: Write the implementation**
 
 Create `internal/cli/export.go`:
 
@@ -2642,12 +2773,12 @@ In `internal/cli/root.go`, add to the subcommand block in `init()`, after `rootC
 	rootCmd.AddCommand(exportCmd)
 ```
 
-- [ ] **Step 2: Verify it builds and registers**
+- [ ] **Step 4: Run tests and verify the command registers**
 
-Run: `go build -o /tmp/tunnelctl cmd/tunnelctl/main.go && /tmp/tunnelctl export --help`
-Expected: the help text above, listing the `-o, --output` flag.
+Run: `go test ./internal/cli/ -run TestExport -v && go build -o /tmp/tunnelctl cmd/tunnelctl/main.go && /tmp/tunnelctl export --help`
+Expected: PASS — 4 tests; then the help text above, listing the `-o, --output` flag.
 
-- [ ] **Step 3: Verify against a running server**
+- [ ] **Step 5: Verify against a running server**
 
 Run:
 ```bash
@@ -2658,10 +2789,10 @@ kill %1
 ```
 Expected: a JSON archive beginning `{`, `"version": 1,`.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add internal/cli/export.go internal/cli/root.go
+git add internal/cli/export.go internal/cli/export_test.go internal/cli/root.go
 git commit -m "feat(cli): tunnelctl export"
 ```
 
@@ -3049,7 +3180,10 @@ git commit -m "feat(cli): tunnelctl import with preview and delete confirmation"
 - Modify: `web/src/api/types.ts` (add `ImportReport`, `ImportItem`)
 - Modify: `web/src/api/client.ts` (add `exportConfig`, `importConfig`)
 - Create: `web/src/components/BackupSection.tsx`
+- Test: `web/src/components/BackupSection.test.tsx`
 - Modify: `web/src/components/Settings.tsx` (mount `BackupSection`)
+- Modify: `web/vite.config.ts` (jsdom environment, include `.tsx` tests)
+- Modify: `web/package.json` (add `jsdom` and `@testing-library/react` dev dependencies)
 
 **Interfaces:**
 - Consumes: `GET /api/v1/config/export`, `POST /api/v1/config/import` from Task 7; the existing `LazytunnelClient.request` pattern; `Button`, `Switch`, `Label` from `web/src/components/ui/`.
@@ -3302,12 +3436,192 @@ import { BackupSection } from './BackupSection'
 
 and place `<BackupSection />` immediately before the final `</>`, after the closing `</section>` of the preferences block.
 
-- [ ] **Step 5: Verify the build and existing tests**
+- [ ] **Step 5: Set up the component test environment**
 
-Run: `cd web && npm run build && npm run test:run`
-Expected: a clean `tsc -b` and Vite build; the existing `tunnelOrder` tests still pass.
+`web/vite.config.ts` currently pins `test.environment: 'node'` and
+`test.include: ['src/**/*.test.ts']` — neither can render a React component.
+Install the two authorised dev dependencies:
 
-- [ ] **Step 6: Verify in the browser**
+```bash
+cd web && npm install -D jsdom @testing-library/react
+```
+
+Then change the `test` block in `web/vite.config.ts` to:
+
+```ts
+  test: {
+    environment: 'jsdom',
+    include: ['src/**/*.test.{ts,tsx}'],
+  },
+```
+
+`jsdom` only applies to test runs — it must not appear in any `web/src/` module
+outside a `*.test.tsx` file, and neither package may become a runtime
+dependency.
+
+- [ ] **Step 6: Write the component tests**
+
+Create `web/src/components/BackupSection.test.tsx`:
+
+```tsx
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type { ImportReport } from '@/api/types'
+import { BackupSection } from './BackupSection'
+
+const exportConfig = vi.fn()
+const importConfig = vi.fn()
+
+vi.mock('@/api/client', () => ({
+  api: {
+    exportConfig: (...args: unknown[]) => exportConfig(...args),
+    importConfig: (...args: unknown[]) => importConfig(...args),
+  },
+}))
+
+const ARCHIVE = { version: 1, exported_at: '2026-07-29T08:40:12Z', source: 'test', tunnels: [] }
+
+function report(overrides: Partial<ImportReport> = {}): ImportReport {
+  return {
+    mode: 'merge',
+    dry_run: true,
+    items: [
+      { action: 'update', name: 'prod-db', id: 'id-1' },
+      { action: 'create', name: 'staging-api', id: 'id-2' },
+      { action: 'skip', name: 'socks-jump', id: 'id-3', reason: 'identical to stored tunnel' },
+    ],
+    created: 1,
+    updated: 1,
+    skipped: 1,
+    deleted: 0,
+    failed: 0,
+    ...overrides,
+  }
+}
+
+function selectArchiveFile() {
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement
+  const file = new File([JSON.stringify(ARCHIVE)], 'backup.json', { type: 'application/json' })
+  fireEvent.change(input, { target: { files: [file] } })
+}
+
+beforeEach(() => {
+  exportConfig.mockReset()
+  importConfig.mockReset()
+  // jsdom implements neither of these.
+  URL.createObjectURL = vi.fn(() => 'blob:stub')
+  URL.revokeObjectURL = vi.fn()
+})
+
+describe('BackupSection', () => {
+  it('downloads an archive when Download is clicked', async () => {
+    exportConfig.mockResolvedValue(new Blob([JSON.stringify(ARCHIVE)]))
+    render(<BackupSection />)
+
+    fireEvent.click(screen.getByRole('button', { name: /download/i }))
+
+    await waitFor(() => expect(exportConfig).toHaveBeenCalledTimes(1))
+  })
+
+  it('previews a selected file as a dry run without applying it', async () => {
+    importConfig.mockResolvedValue(report())
+    render(<BackupSection />)
+
+    selectArchiveFile()
+
+    await waitFor(() => expect(importConfig).toHaveBeenCalledTimes(1))
+    expect(importConfig).toHaveBeenCalledWith(ARCHIVE, { replace: false, dryRun: true })
+
+    expect(await screen.findByText('prod-db')).toBeTruthy()
+    expect(screen.getByText('staging-api')).toBeTruthy()
+    expect(screen.getByText('socks-jump')).toBeTruthy()
+  })
+
+  it('applies the archive for real when Apply is clicked', async () => {
+    importConfig.mockResolvedValue(report())
+    render(<BackupSection />)
+
+    selectArchiveFile()
+    const apply = await screen.findByRole('button', { name: /^apply$/i })
+
+    importConfig.mockResolvedValue(report({ dry_run: false }))
+    fireEvent.click(apply)
+
+    await waitFor(() => expect(importConfig).toHaveBeenCalledTimes(2))
+    expect(importConfig).toHaveBeenLastCalledWith(ARCHIVE, { replace: false })
+  })
+
+  it('passes replace mode through to the preview call', async () => {
+    importConfig.mockResolvedValue(report({ mode: 'replace', deleted: 1 }))
+    render(<BackupSection />)
+
+    fireEvent.click(screen.getByRole('switch'))
+    selectArchiveFile()
+
+    await waitFor(() => expect(importConfig).toHaveBeenCalledTimes(1))
+    expect(importConfig).toHaveBeenCalledWith(ARCHIVE, { replace: true, dryRun: true })
+  })
+
+  it('warns how many tunnels a replace will delete', async () => {
+    importConfig.mockResolvedValue(
+      report({
+        mode: 'replace',
+        deleted: 2,
+        items: [
+          { action: 'delete', name: 'old-bastion', id: 'id-9', reason: 'not present in archive' },
+          { action: 'delete', name: 'retired-db', id: 'id-8', reason: 'not present in archive' },
+        ],
+      })
+    )
+    render(<BackupSection />)
+
+    fireEvent.click(screen.getByRole('switch'))
+    selectArchiveFile()
+
+    // The count must be on the button itself — this is the last thing shown
+    // before tunnels are destroyed.
+    expect(await screen.findByRole('button', { name: /delete 2/i })).toBeTruthy()
+    expect(screen.getAllByText('DELETE')).toHaveLength(2)
+  })
+
+  it('surfaces an import failure instead of a preview', async () => {
+    importConfig.mockRejectedValue(new Error('archive validation failed'))
+    render(<BackupSection />)
+
+    selectArchiveFile()
+
+    expect(await screen.findByText(/archive validation failed/i)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^apply$/i })).toBeNull()
+  })
+
+  it('surfaces a malformed file without calling the API', async () => {
+    render(<BackupSection />)
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['this is not json'], 'broken.json', { type: 'application/json' })
+    fireEvent.change(input, { target: { files: [file] } })
+
+    await waitFor(() => expect(screen.getByText(/JSON/i)).toBeTruthy())
+    expect(importConfig).not.toHaveBeenCalled()
+  })
+})
+```
+
+- [ ] **Step 7: Run the tests**
+
+Run: `cd web && npm run test:run`
+Expected: PASS — 7 `BackupSection` tests plus the existing `tunnelOrder` tests.
+
+If a test fails because the component renders differently than asserted, fix
+the **component** to match the test's intent (the count belongs on the Apply
+button; errors replace the preview) rather than loosening the assertion.
+
+- [ ] **Step 8: Verify the production build**
+
+Run: `cd web && npm run build`
+Expected: a clean `tsc -b` and Vite build.
+
+- [ ] **Step 9: Verify in the browser**
 
 Run:
 ```bash
@@ -3317,10 +3631,13 @@ cd web && npm run dev
 ```
 Open Settings. Confirm: Download produces a JSON file; re-uploading that same file previews every tunnel as `skip`; toggling Replace mode and re-selecting the file shows the delete count in the Apply button label.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add web/src/api/types.ts web/src/api/client.ts web/src/components/BackupSection.tsx web/src/components/Settings.tsx
+git add web/src/api/types.ts web/src/api/client.ts \
+        web/src/components/BackupSection.tsx web/src/components/BackupSection.test.tsx \
+        web/src/components/Settings.tsx web/vite.config.ts \
+        web/package.json web/package-lock.json
 git commit -m "feat(web): backup download and restore with diff preview"
 ```
 
