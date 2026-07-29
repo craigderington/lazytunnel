@@ -5,6 +5,7 @@ import { useSettingsStore } from '@/store/settingsStore'
 import { useThemeStore } from '@/store/themeStore'
 import { useTunnelStore } from '@/store/tunnelStore'
 import { PageHeader } from './PageHeader'
+import { BackupSection } from './BackupSection'
 import { Label } from './ui/label'
 import { Input } from './ui/input'
 import { Switch } from './ui/switch'
@@ -124,6 +125,8 @@ export function Settings() {
           Reset defaults
         </Button>
       </section>
+
+      <BackupSection />
     </>
   )
 }

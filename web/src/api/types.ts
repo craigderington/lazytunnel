@@ -94,3 +94,22 @@ export interface AgentInfo {
   last_seen: string
   tunnel_count?: number
 }
+
+export interface ImportItem {
+  action: 'create' | 'update' | 'skip' | 'delete'
+  name: string
+  id: string
+  reason?: string
+  error?: string
+}
+
+export interface ImportReport {
+  mode: 'merge' | 'replace'
+  dry_run: boolean
+  items: ImportItem[]
+  created: number
+  updated: number
+  skipped: number
+  deleted: number
+  failed: number
+}
