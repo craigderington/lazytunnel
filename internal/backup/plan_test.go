@@ -361,3 +361,79 @@ func TestPlanLaterEntryCollidingWithMintedIDRegenerates(t *testing.T) {
 		t.Errorf("got second ID %q, want generated-id-2", second.Spec.ID)
 	}
 }
+
+// TestPlanRoundTripsWhitespacePaddedNameAsSkip pins the regression the
+// reviewer caught: a stored tunnel whose Name is not trimmed (internal/api/validation.go's
+// SanitizeString strips only null and control bytes, not whitespace, so
+// "prod-db " with a trailing space can genuinely be stored) must still match
+// its own, now-trimmed, exported archive entry. Before the fix, byName was
+// keyed on the raw stored Name while the archive-derived spec had already
+// been trimmed, so an UNMODIFIED export-then-replace round trip produced a
+// create+delete pair instead of a single skip — silently reassigning the
+// tunnel's ID on every restore.
+func TestPlanRoundTripsWhitespacePaddedNameAsSkip(t *testing.T) {
+	stored := sampleSpec()
+	stored.Name = "prod-db " // trailing space, as SanitizeString would allow
+
+	entry := EntryFromSpec(stored) // trims to "prod-db"
+
+	plan, err := Plan([]*types.TunnelSpec{stored}, archiveOf(entry), testOptions(ModeReplace))
+	if err != nil {
+		t.Fatalf("Plan returned error: %v", err)
+	}
+	if len(plan.Items) != 1 {
+		t.Fatalf("got %d items, want 1 — an unmodified round trip of a whitespace-padded name must not create+delete", len(plan.Items))
+	}
+	item := plan.Items[0]
+	if item.Action != ActionSkip {
+		t.Fatalf("got action %q, want skip", item.Action)
+	}
+	if item.ID != stored.ID {
+		t.Errorf("got ID %q, want the stored ID %q — identity must not churn", item.ID, stored.ID)
+	}
+}
+
+// TestPlanFallsBackToUUIDWhenNewIDNeverFreesUp guards against the ID-mint
+// loop hanging forever. NewID is an injection point; a test double or future
+// caller that always returns the same already-used ID must not stall Plan,
+// since Plan takes no context and has no cancellation path. The goroutine and
+// timeout below make a would-be hang fail fast instead of blocking the test
+// suite.
+func TestPlanFallsBackToUUIDWhenNewIDNeverFreesUp(t *testing.T) {
+	existing := sampleSpec()
+	existing.ID = "collision-only-id"
+
+	entry := validEntry("staging-api") // no ID of its own; Plan must mint one
+	opts := PlanOptions{
+		Mode:         ModeMerge,
+		DefaultOwner: "importer",
+		NewID:        func() string { return "collision-only-id" }, // never free
+		Now:          fixedClock(time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)),
+	}
+
+	type result struct {
+		plan *ImportPlan
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		plan, err := Plan([]*types.TunnelSpec{existing}, archiveOf(entry), opts)
+		done <- result{plan, err}
+	}()
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("Plan returned error: %v", r.err)
+		}
+		item := itemFor(t, r.plan, "staging-api")
+		if item.Spec.ID == "" {
+			t.Fatal("expected a minted ID, got empty")
+		}
+		if item.Spec.ID == "collision-only-id" {
+			t.Fatal("Plan must not accept an ID that a pathological NewID keeps colliding with")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Plan did not return within 2s — the ID-mint loop appears to be unbounded")
+	}
+}

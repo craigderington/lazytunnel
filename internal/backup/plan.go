@@ -3,12 +3,21 @@ package backup
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/craigderington/lazytunnel/pkg/types"
 )
+
+// maxIDMintAttempts bounds how many times Plan will call opts.NewID looking
+// for a free ID before giving up on it and falling back to uuid.New, which is
+// collision-free by construction. NewID is an injection point: without a
+// bound, a test double or future caller that keeps returning an already-used
+// (or empty) ID would hang Plan forever, and Plan takes no context to cancel
+// on.
+const maxIDMintAttempts = 10
 
 // Mode selects how an import treats tunnels that are stored but absent from
 // the archive.
@@ -107,10 +116,19 @@ func Plan(current []*types.TunnelSpec, archive *Archive, opts PlanOptions) (*Imp
 		opts.DefaultOwner = "api-user"
 	}
 
+	// byName and matched are keyed on the TRIMMED name throughout, because
+	// EntryFromSpec/SpecFromEntry trim the archive side (see below), and a
+	// stored tunnel's Name is not guaranteed trimmed: internal/api/validation.go's
+	// SanitizeString strips only null and control bytes, not whitespace, so a
+	// tunnel genuinely named "prod-db " (trailing space) can exist today. If
+	// this map were keyed on the raw stored Name, an unmodified round trip of
+	// that exact tunnel would fail to match its own trimmed archive entry and
+	// churn its identity — a delete+recreate in replace mode, a spurious
+	// duplicate in merge mode.
 	byName := make(map[string]*types.TunnelSpec, len(current))
 	usedIDs := make(map[string]bool, len(current))
 	for _, spec := range current {
-		byName[spec.Name] = spec
+		byName[strings.TrimSpace(spec.Name)] = spec
 		usedIDs[spec.ID] = true
 	}
 
@@ -119,18 +137,20 @@ func Plan(current []*types.TunnelSpec, archive *Archive, opts PlanOptions) (*Imp
 
 	for _, entry := range archive.Tunnels {
 		spec := SpecFromEntry(entry)
-		// SpecFromEntry trims the name, so matching against the stored specs
-		// (also keyed on their, already-trimmed, Name) agrees with
-		// ValidateArchive's trimmed empty/length/duplicate checks by
-		// construction. Matching on the raw, untrimmed entry.Name would let
-		// " prod-db" and "prod-db" pass validation as distinct names yet
-		// silently churn the same tunnel's identity.
+		// spec.Name is already trimmed by SpecFromEntry, and byName is keyed
+		// on the trimmed stored name (see above), so this lookup agrees with
+		// ValidateArchive's trimmed checks by construction.
 		existing, found := byName[spec.Name]
 
 		if !found {
 			id := entry.ID
-			for id == "" || usedIDs[id] {
+			for attempts := 0; (id == "" || usedIDs[id]) && attempts < maxIDMintAttempts; attempts++ {
 				id = opts.NewID()
+			}
+			if id == "" || usedIDs[id] {
+				// The injected NewID exhausted its attempts without producing
+				// a free ID. Fall back to a real UUID, which cannot collide.
+				id = uuid.New().String()
 			}
 			usedIDs[id] = true
 
@@ -178,7 +198,7 @@ func Plan(current []*types.TunnelSpec, archive *Archive, opts PlanOptions) (*Imp
 
 	if opts.Mode == ModeReplace {
 		for _, spec := range current {
-			if matched[spec.Name] {
+			if matched[strings.TrimSpace(spec.Name)] {
 				continue
 			}
 			plan.Items = append(plan.Items, PlanItem{
