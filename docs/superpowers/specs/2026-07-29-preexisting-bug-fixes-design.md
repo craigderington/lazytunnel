@@ -69,21 +69,61 @@ established pattern in the package: `list.go` declares `tunnelListItem` and
 rather than importing them.
 
 The struct carries exactly the fields the CLI has flags for — `name`, `type`,
-`hops`, `localPort`, `remoteHost`, `remotePort`, `autoReconnect`, `keepAlive`,
-`maxRetries` — and no others. Hops keep their existing snake_case tags, since
-those already agree.
+`hops`, `localPort`, `localBindAddress`, `remoteHost`, `remotePort`,
+`autoReconnect`, `keepAlive`, `maxRetries`. Hops keep their existing snake_case
+tags, since those already agree.
 
-`localBindAddress` and `agentId` are deliberately omitted: `create.go` has no
-flag for either (see `create.go:61-71`), so there is no value to send. Adding
-them as always-empty fields would be noise.
+`agentId` is deliberately omitted: `create.go` has no flag for it, so there is
+no value to send, and an always-empty field would be noise.
 
-**Observation, deliberately not fixed here.** Because there is no
-`--local-bind-address` flag, a tunnel created through the CLI is stored with an
-empty bind address, which `internal/tunnel/forward.go` treats as `0.0.0.0` —
-so every CLI-created tunnel listens on all interfaces with no way to say
-otherwise. That is a missing feature rather than a defect in the JSON contract,
-and adding the flag is a separate change. Noted so it is visible rather than
-discovered later.
+---
+
+## Fix 1b — `tunnelctl create --local-bind-address`
+
+### The defect
+
+`create.go` has no flag for the bind address (see `create.go:61-71`), so a
+CLI-created tunnel is stored with an empty value, which
+`internal/tunnel/forward.go:105` and `:618` both treat as `0.0.0.0`. Every
+CLI-created tunnel therefore listens on all interfaces with no way to ask for
+loopback.
+
+The web UI has the same gap from the other direction — it never sends
+`localBindAddress` at all — so in practice every tunnel created by any path
+today binds all interfaces, even though the schema at
+`internal/storage/sqlite.go:52` declares `local_bind_address TEXT DEFAULT '127.0.0.1'`.
+That column default never applies, because `Save` always supplies the column
+explicitly.
+
+### The fix
+
+Add `--local-bind-address`, defaulting to **`127.0.0.1`**.
+
+The default is a deliberate behaviour choice, and it is safe to make because
+`tunnelctl create` has never worked: the JSON contract defect in Fix 1 means no
+working script can exist today, so there is no established behaviour to
+preserve. Given a free choice, loopback is right — it matches the schema's own
+declared intent, it matches the deny-by-default posture taken for CORS, and
+widening exposure should be something an operator asks for rather than
+something they get by not knowing about a flag.
+
+Operators who want the old effective behaviour pass
+`--local-bind-address 0.0.0.0` explicitly.
+
+### Known inconsistency this introduces
+
+After this change, a tunnel created by the CLI binds loopback while one created
+through the web UI still binds all interfaces, because the UI sends no value.
+That divergence is real and should be closed by having the UI send an explicit
+bind address, but doing so changes behaviour for an existing, working UI flow
+and belongs in its own change with its own decision about defaults. It is
+recorded here so the difference is known rather than discovered.
+
+### Testing
+
+The contract test covers the field like any other. Add a CLI test asserting the
+flag's default is `127.0.0.1` and that an explicit `0.0.0.0` is transmitted
+unchanged — the second half matters because it is the escape hatch.
 
 ### The guard
 
@@ -209,6 +249,14 @@ schema again, or the example stops parsing, the test fails.
 ## Build order
 
 1. Fix 1 — CLI request struct and contract test. Self-contained.
-2. Fix 2 — CORS config plumbing, middleware rewrite, table test.
-3. Fix 3 — rewrite `config.example.yaml` and add its load test. Ordered last
+2. Fix 1b — `--local-bind-address` flag. Immediately after Fix 1, because it
+   adds a field to the struct that fix introduces.
+3. Fix 2 — CORS config plumbing, middleware rewrite, table test.
+4. Fix 3 — rewrite `config.example.yaml` and add its load test. Ordered last
    because it documents the CORS default that Fix 2 establishes.
+
+## Documentation
+
+`docs/cli-reference.md` gains the `--local-bind-address` flag in the `create`
+section, stating the `127.0.0.1` default and that `0.0.0.0` opts into all
+interfaces. Folded into Fix 1b rather than given its own task.
