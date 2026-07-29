@@ -124,6 +124,24 @@ func formatImportReport(report *importReport) string {
 	return buf.String()
 }
 
+// importErrorBody mirrors the server's error envelope for a failed import
+// request. On a partially-completed apply, internal/api/backup_handlers.go
+// deliberately nests the report that was produced before the failure under
+// "report" — per its own comment, that report is "the only thing that names
+// which tunnels landed and which did not". When present, postImport surfaces
+// it so runImport can render it through formatImportReport instead of
+// dumping the raw JSON envelope.
+type importErrorBody struct {
+	Code    string        `json:"code"`
+	Message string        `json:"message"`
+	Report  *importReport `json:"report"`
+}
+
+// postImport returns the parsed report on success. On failure it returns a
+// non-nil error; if the server's error body carried a partial report (see
+// importErrorBody), that report is also returned alongside the error so the
+// caller can render it before surfacing the failure. Callers must check the
+// returned report even when err != nil.
 func postImport(archive []byte, mode string, dryRun bool) (*importReport, error) {
 	url := fmt.Sprintf("%s/api/v1/config/import?mode=%s", viper.GetString("server"), mode)
 	if dryRun {
@@ -142,6 +160,14 @@ func postImport(archive []byte, mode string, dryRun bool) (*importReport, error)
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		var errBody importErrorBody
+		if json.Unmarshal(body, &errBody) == nil && errBody.Report != nil {
+			msg := errBody.Message
+			if msg == "" {
+				msg = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			}
+			return errBody.Report, fmt.Errorf("import failed: %s", msg)
+		}
 		return nil, fmt.Errorf("import failed (HTTP %d): %s", resp.StatusCode, string(body))
 	}
 
@@ -159,14 +185,20 @@ func runImport(cmd *cobra.Command, args []string) error {
 		mode = "replace"
 	}
 
+	out := cmd.OutOrStdout()
+
 	// Always preview first: the plan is what gets printed, and with --replace
 	// it is what the confirmation prompt is based on.
 	preview, err := postImport(archive, mode, true)
 	if err != nil {
+		if preview != nil {
+			fmt.Fprintln(out, "Plan:")
+			fmt.Fprint(out, formatImportReport(preview))
+		}
 		return err
 	}
 
-	out := cmd.OutOrStdout()
+	fmt.Fprintln(out, "Plan:")
 	fmt.Fprint(out, formatImportReport(preview))
 
 	if importDryRun {
@@ -181,6 +213,15 @@ func runImport(cmd *cobra.Command, args []string) error {
 		if err != nil && err != io.EOF {
 			return fmt.Errorf("failed to read confirmation: %w", err)
 		}
+		// An immediate EOF with no answer at all means there was nobody
+		// there to ask — stdin is not a terminal (e.g. cron). That is
+		// different from a deliberate "n": silently treating it as a
+		// decline would exit 0, so a scheduled --replace would report
+		// success while having deleted nothing. Fail loudly instead and
+		// name the escape hatch.
+		if err == io.EOF && strings.TrimSpace(answer) == "" {
+			return fmt.Errorf("cannot confirm deletions: stdin is not interactive; re-run with --yes to proceed")
+		}
 		if strings.ToLower(strings.TrimSpace(answer)) != "y" {
 			fmt.Fprintln(out, "Aborted.")
 			return nil
@@ -189,9 +230,14 @@ func runImport(cmd *cobra.Command, args []string) error {
 
 	report, err := postImport(archive, mode, false)
 	if err != nil {
+		if report != nil {
+			fmt.Fprintln(out, "Applied:")
+			fmt.Fprint(out, formatImportReport(report))
+		}
 		return err
 	}
 
+	fmt.Fprintln(out, "Applied:")
 	fmt.Fprint(out, formatImportReport(report))
 	return nil
 }

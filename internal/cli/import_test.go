@@ -182,7 +182,14 @@ func importTestServer(t *testing.T, reportBody string) (*httptest.Server, *[]imp
 // callImport writes archiveBody to a temp file and runs runImport against it,
 // following the callExport pattern for wiring cobra's in/out streams and
 // resetting package-level flag state afterwards.
-func callImport(t *testing.T, serverURL, archiveBody, stdin string) (stdout string, err error) {
+//
+// The previous flag values are captured BEFORE this function assigns
+// replace/dryRun/yes into the package globals — callers must not set
+// importReplace/importDryRun/importYes themselves. That ordering matters:
+// capturing after the assignment (as an earlier version of this helper did)
+// makes t.Cleanup restore the globals to the very values this call just set,
+// which is a no-op leak into whichever test runs next.
+func callImport(t *testing.T, serverURL, archiveBody, stdin string, replace, dryRun, yes bool) (stdout string, err error) {
 	t.Helper()
 
 	withTestServerURL(t, serverURL)
@@ -191,6 +198,7 @@ func callImport(t *testing.T, serverURL, archiveBody, stdin string) (stdout stri
 	t.Cleanup(func() {
 		importReplace, importDryRun, importYes = prevReplace, prevDryRun, prevYes
 	})
+	importReplace, importDryRun, importYes = replace, dryRun, yes
 
 	path := filepath.Join(t.TempDir(), "archive.json")
 	if err := os.WriteFile(path, []byte(archiveBody), 0o600); err != nil {
@@ -210,11 +218,7 @@ func callImport(t *testing.T, serverURL, archiveBody, stdin string) (stdout stri
 func TestImportDryRunMakesExactlyOneRequest(t *testing.T) {
 	ts, requests := importTestServer(t, replaceReportWithDeletionJSON)
 
-	importReplace = true
-	importDryRun = true
-	importYes = false
-
-	out, err := callImport(t, ts.URL, `{"tunnels":[]}`, "")
+	out, err := callImport(t, ts.URL, `{"tunnels":[]}`, "", true, true, false)
 	if err != nil {
 		t.Fatalf("callImport returned error: %v", err)
 	}
@@ -233,12 +237,8 @@ func TestImportDryRunMakesExactlyOneRequest(t *testing.T) {
 func TestImportDeclineAbortsWithoutApplying(t *testing.T) {
 	ts, requests := importTestServer(t, replaceReportWithDeletionJSON)
 
-	importReplace = true
-	importDryRun = false
-	importYes = false
-
 	// Anything other than "y" must decline.
-	out, err := callImport(t, ts.URL, `{"tunnels":[]}`, "n\n")
+	out, err := callImport(t, ts.URL, `{"tunnels":[]}`, "n\n", true, false, false)
 	if err != nil {
 		t.Fatalf("callImport returned error: %v", err)
 	}
@@ -254,11 +254,7 @@ func TestImportDeclineAbortsWithoutApplying(t *testing.T) {
 func TestImportYesSkipsPromptButApplies(t *testing.T) {
 	ts, requests := importTestServer(t, replaceReportWithDeletionJSON)
 
-	importReplace = true
-	importDryRun = false
-	importYes = true
-
-	out, err := callImport(t, ts.URL, `{"tunnels":[]}`, "")
+	out, err := callImport(t, ts.URL, `{"tunnels":[]}`, "", true, false, true)
 	if err != nil {
 		t.Fatalf("callImport returned error: %v", err)
 	}
@@ -280,11 +276,7 @@ func TestImportYesSkipsPromptButApplies(t *testing.T) {
 func TestImportAcceptAppliesAfterPrompt(t *testing.T) {
 	ts, requests := importTestServer(t, replaceReportWithDeletionJSON)
 
-	importReplace = true
-	importDryRun = false
-	importYes = false
-
-	out, err := callImport(t, ts.URL, `{"tunnels":[]}`, "y\n")
+	out, err := callImport(t, ts.URL, `{"tunnels":[]}`, "y\n", true, false, false)
 	if err != nil {
 		t.Fatalf("callImport returned error: %v", err)
 	}
@@ -300,15 +292,10 @@ func TestImportAcceptAppliesAfterPrompt(t *testing.T) {
 func TestImportMergeWithoutDeletionsNeverPrompts(t *testing.T) {
 	ts, requests := importTestServer(t, mergeReportJSON)
 
-	importReplace = false
-	importDryRun = false
-	importYes = false
-
 	// No stdin provided at all: if the command tried to read a confirmation
-	// here, ReadString would hit EOF immediately and (per the code) treat
-	// that as a decline, aborting the run. A merge with no deletions must
-	// apply without ever consulting stdin.
-	out, err := callImport(t, ts.URL, "", "")
+	// here, ReadString would hit EOF immediately. A merge with no deletions
+	// must apply without ever consulting stdin.
+	out, err := callImport(t, ts.URL, "", "", false, false, false)
 	if err != nil {
 		t.Fatalf("callImport returned error: %v", err)
 	}
@@ -318,5 +305,161 @@ func TestImportMergeWithoutDeletionsNeverPrompts(t *testing.T) {
 	}
 	if strings.Contains(out, "Continue?") || strings.Contains(out, "Aborted.") {
 		t.Errorf("a merge with no deletions must not prompt:\n%s", out)
+	}
+}
+
+// TestImportFlagCleanupDoesNotLeak guards the callImport helper itself: it
+// must capture the previous flag values BEFORE assigning its own, so that
+// t.Cleanup genuinely restores pre-call state rather than a no-op. This is
+// order-independent — it compares against whatever the flags were
+// immediately before the subtest ran, not a hardcoded default, so it fails
+// under the original bug (capture-after-mutation) regardless of which other
+// tests ran first.
+func TestImportFlagCleanupDoesNotLeak(t *testing.T) {
+	ts, _ := importTestServer(t, replaceReportWithDeletionJSON)
+
+	beforeReplace, beforeDryRun, beforeYes := importReplace, importDryRun, importYes
+
+	t.Run("subtest mutates all three flags", func(t *testing.T) {
+		if _, err := callImport(t, ts.URL, `{"tunnels":[]}`, "", true, true, false); err != nil {
+			t.Fatalf("callImport returned error: %v", err)
+		}
+	})
+
+	if importReplace != beforeReplace || importDryRun != beforeDryRun || importYes != beforeYes {
+		t.Fatalf("callImport leaked flag state out of its subtest: got replace=%v dryRun=%v yes=%v, want replace=%v dryRun=%v yes=%v (the values before the subtest ran)",
+			importReplace, importDryRun, importYes, beforeReplace, beforeDryRun, beforeYes)
+	}
+}
+
+// TestImportLabelsPlanAndAppliedOutputs guards against the preview and the
+// post-apply report being visually indistinguishable: without a label, a
+// user cannot tell from the output whether the apply actually ran.
+func TestImportLabelsPlanAndAppliedOutputs(t *testing.T) {
+	ts, _ := importTestServer(t, mergeReportJSON)
+
+	out, err := callImport(t, ts.URL, `{"tunnels":[]}`, "", false, false, false)
+	if err != nil {
+		t.Fatalf("callImport returned error: %v", err)
+	}
+
+	planIdx := strings.Index(out, "Plan:")
+	appliedIdx := strings.Index(out, "Applied:")
+	if planIdx == -1 {
+		t.Fatalf("output must label the preview block %q:\n%s", "Plan:", out)
+	}
+	if appliedIdx == -1 {
+		t.Fatalf("output must label the post-apply block %q:\n%s", "Applied:", out)
+	}
+	if planIdx >= appliedIdx {
+		t.Fatalf("%q must appear before %q:\n%s", "Plan:", "Applied:", out)
+	}
+}
+
+// partialFailureBodyJSON mirrors the wrapped error envelope
+// internal/api/backup_handlers.go sends when an apply partially completes
+// before failing: an HTTP 500 whose body nests the report under "report",
+// naming exactly which tunnels landed and which did not.
+const partialFailureBodyJSON = `{
+	"code": "IMPORT_PARTIAL_FAILURE",
+	"message": "1 of 2 operations succeeded",
+	"report": {
+		"mode": "replace",
+		"dry_run": false,
+		"items": [
+			{"action":"delete","name":"prod-db","id":"id-1"},
+			{"action":"delete","name":"old-bastion","id":"id-4","error":"tunnel is currently active"}
+		],
+		"deleted": 1,
+		"failed": 1
+	}
+}`
+
+func TestImportSurfacesPartialFailureReport(t *testing.T) {
+	var requestCount int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			// The dry-run preview succeeds cleanly.
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(replaceReportWithDeletionJSON))
+			return
+		}
+		// The apply partially fails.
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(partialFailureBodyJSON))
+	}))
+	t.Cleanup(ts.Close)
+
+	out, err := callImport(t, ts.URL, `{"tunnels":[]}`, "y\n", true, false, false)
+	if err == nil {
+		t.Fatal("expected an error for a partially-failed apply, got nil")
+	}
+	if requestCount != 2 {
+		t.Fatalf("got %d requests, want exactly 2 (preview + apply)", requestCount)
+	}
+
+	for _, want := range []string{"prod-db", "old-bastion", "tunnel is currently active", "1 failed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output must name the individual tunnels and errors, not just dump the JSON envelope; missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, `"code"`) || strings.Contains(out, `"report"`) {
+		t.Errorf("output must be rendered through formatImportReport, not a raw JSON dump:\n%s", out)
+	}
+}
+
+func TestImportSurfacesRawErrorWhenNoReportPresent(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"storage unavailable"}`))
+	}))
+	t.Cleanup(ts.Close)
+
+	// dry-run + merge so the run bails out on the very first request,
+	// before any confirmation logic is reachable.
+	_, err := callImport(t, ts.URL, `{"tunnels":[]}`, "", false, true, false)
+	if err == nil {
+		t.Fatal("expected an error for a 500 response, got nil")
+	}
+	if !strings.Contains(err.Error(), "storage unavailable") {
+		t.Errorf("error should surface the server's raw message when no report is present, got %q", err)
+	}
+}
+
+func TestImportEOFOnConfirmationFailsClosedWithError(t *testing.T) {
+	ts, requests := importTestServer(t, replaceReportWithDeletionJSON)
+
+	// Empty stdin: ReadString hits io.EOF immediately with no answer at
+	// all — nobody was there to answer. Silently treating that as a
+	// decline (exit 0) would let a cron job believe a scheduled --replace
+	// succeeded when it actually deleted nothing.
+	_, err := callImport(t, ts.URL, `{"tunnels":[]}`, "", true, false, false)
+	if err == nil {
+		t.Fatal("expected an error when the confirmation prompt hits EOF with no input, got nil")
+	}
+	if !strings.Contains(err.Error(), "--yes") {
+		t.Errorf("the error must name --yes as the way to proceed non-interactively, got %q", err)
+	}
+	if len(*requests) != 1 {
+		t.Fatalf("got %d requests, want exactly 1 (preview only); EOF must not apply", len(*requests))
+	}
+}
+
+func TestImportDeclinedPipedInputExitsZero(t *testing.T) {
+	ts, requests := importTestServer(t, replaceReportWithDeletionJSON)
+
+	// A deliberate "n" (even delivered over a pipe, not a TTY) is a real
+	// answer, unlike the bare-EOF case above — it must abort cleanly with
+	// exit 0.
+	out, err := callImport(t, ts.URL, `{"tunnels":[]}`, "n\n", true, false, false)
+	if err != nil {
+		t.Fatalf("a deliberate decline must exit 0 (err == nil), got error: %v", err)
+	}
+	if len(*requests) != 1 {
+		t.Fatalf("got %d requests, want exactly 1 (preview only)", len(*requests))
+	}
+	if !strings.Contains(out, "Aborted.") {
+		t.Errorf("expected an abort message:\n%s", out)
 	}
 }
