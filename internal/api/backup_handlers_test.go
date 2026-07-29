@@ -194,7 +194,9 @@ func postImport(t *testing.T, srv *Server, query string, archive backup.Archive)
 		t.Fatalf("failed to marshal archive: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	srv.handleImportConfig(rec, httptest.NewRequest(http.MethodPost, "/api/v1/config/import"+query, bytes.NewReader(body)))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/config/import"+query, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.handleImportConfig(rec, req)
 	return rec
 }
 
@@ -346,6 +348,7 @@ func TestHandleImportConfigRejectsOversizedBodyWith413(t *testing.T) {
 	oversized := append([]byte(`{"source":"`), bytes.Repeat([]byte("a"), maxImportBytes+1)...)
 	oversized = append(oversized, []byte(`"}`)...)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/config/import", bytes.NewReader(oversized))
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.handleImportConfig(rec, req)
 
@@ -364,6 +367,40 @@ func TestHandleImportConfigRejectsOversizedBodyWith413(t *testing.T) {
 	}
 	if !strings.Contains(body.Message, "10 MiB") {
 		t.Errorf("message should state the 10 MiB limit, got %q", body.Message)
+	}
+}
+
+// TestHandleImportConfigRejectsNonJSONContentTypeWith415 guards against a
+// cross-origin, preflight-free POST reaching this route: an HTML form with
+// enctype="text/plain" submits without a CORS preflight (text/plain is a
+// CORS-simple content type) and json.Decoder.Decode accepts the exact byte
+// stream such a form produces. With corsMiddleware sending
+// Access-Control-Allow-Origin: * on every route and auth disabled by
+// default, a required Content-Type is the only thing standing between an
+// arbitrary origin and the most destructive route in the API.
+func TestHandleImportConfigRejectsNonJSONContentTypeWith415(t *testing.T) {
+	store := newBackupTestStorage(backupTestSpec("id-1", "prod-db", 5432))
+	srv := newBackupTestServer(t, store)
+
+	archive := backup.Archive{
+		Version: backup.SchemaVersion,
+		Tunnels: []backup.TunnelEntry{backup.EntryFromSpec(backupTestSpec("", "staging-api", 8081))},
+	}
+	body, err := json.Marshal(archive)
+	if err != nil {
+		t.Fatalf("failed to marshal archive: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/config/import", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "text/plain")
+	rec := httptest.NewRecorder()
+	srv.handleImportConfig(rec, req)
+
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("got status %d, want 415: %s", rec.Code, rec.Body.String())
+	}
+	if len(store.specs) != 1 {
+		t.Fatalf("a rejected Content-Type must write nothing, got %d stored tunnels", len(store.specs))
 	}
 }
 
@@ -478,6 +515,7 @@ func TestHandleImportConfigWritesAndReconcilesWithBackgroundContext(t *testing.T
 	cancel() // the request context is already dead before the handler runs
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/config/import", bytes.NewReader(body)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.handleImportConfig(rec, req)
 

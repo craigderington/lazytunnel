@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime"
 	"net/http"
 	"strconv"
 	"time"
@@ -63,6 +64,28 @@ func (s *Server) handleExportConfig(w http.ResponseWriter, r *http.Request) {
 // deletes tunnels absent from the archive. ?dry_run=true returns the intended
 // plan without writing anything.
 func (s *Server) handleImportConfig(w http.ResponseWriter, r *http.Request) {
+	// Requiring an explicit application/json Content-Type closes off a
+	// cross-origin attack surface that the wider (pre-existing, out of scope
+	// here) CORS posture leaves open: corsMiddleware sends
+	// Access-Control-Allow-Origin: * on every route, and auth is disabled
+	// entirely unless a JWT secret is configured, so with no auth configured
+	// there is nothing else standing between an arbitrary origin and this,
+	// the most destructive route in the API. A plain HTML
+	// <form enctype="text/plain"> submits a POST with Content-Type: text/plain
+	// with no CORS preflight at all (text/plain is a CORS-simple content
+	// type), and json.Decoder.Decode happily parses the exact byte stream
+	// such a form produces. mime.ParseMediaType is used (rather than a bare
+	// string compare) so a legitimate "application/json; charset=utf-8" is
+	// still accepted.
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		s.respondJSON(w, http.StatusUnsupportedMediaType, map[string]interface{}{
+			"code":    "UNSUPPORTED_MEDIA_TYPE",
+			"message": "Content-Type must be application/json",
+		})
+		return
+	}
+
 	if s.storage == nil {
 		s.ServiceUnavailableError(w, "Persistent storage is not configured")
 		return

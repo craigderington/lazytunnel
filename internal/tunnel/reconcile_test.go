@@ -386,26 +386,28 @@ func TestReconcileDoesNotAdoptTunnelGoneByTheTimeOfTheGetRecheck(t *testing.T) {
 }
 
 // TestReconcileDefersDropOnPendingTunnel is the I1 mitigation guard for the
-// dropTunnel path specifically. Stopping a tunnel while it is Pending
-// (mid-connect) races with connectTunnel's unlocked writes to
-// session/multiSession/forwarder (manager.go), which Tunnel.Stop later reads
-// under t.mu — see the "Known issue" section of the task report for the root
-// cause. dropTunnel must defer action on a Pending tunnel rather than stop
-// it, even when its storage row has disappeared; a later pass, once the
-// tunnel has settled into Active or Failed, is responsible for cleaning it
-// up.
+// dropTunnel path specifically, for a tunnel that runs on THIS node.
+// Stopping a tunnel while it is Pending (mid-connect) races with
+// connectTunnel's unlocked writes to session/multiSession/forwarder
+// (manager.go), which Tunnel.Stop later reads under t.mu — see the "Known
+// issue" section of the task report for the root cause. dropTunnel must
+// defer action on a locally-run Pending tunnel rather than stop it, even
+// when its storage row has disappeared; a later pass, once the tunnel has
+// settled into Active or Failed, is responsible for cleaning it up.
 //
-// This spec deliberately keeps the manager's nodeAgentID empty (the default)
-// against AgentID "remote-agent", so RunOnThisNode is false and the tunnel is
-// only ever reached via the "missing from storage" path into dropTunnel —
-// never via applyDesired. See
-// TestReconcileDefersDesiredStateActionOnPendingTunnel below for the
+// SetNodeAgentID("remote-agent") makes RunOnThisNode true for this spec's
+// AgentID "remote-agent" — i.e. this models a tunnel actually running on this
+// node, which is the only case the deferral is meant to protect. See
+// TestReconcileDropsDelegatedPendingTunnelMissingFromStorage below for the
+// opposite case (a delegated tunnel, RunOnThisNode false), which must NOT be
+// deferred, and TestReconcileDefersDesiredStateActionOnPendingTunnel for the
 // applyDesired path, which is a materially different code path and was, for
 // one review round, un-covered by a test of this same name.
 func TestReconcileDefersDropOnPendingTunnel(t *testing.T) {
 	spec := remoteSpec("id-1", "prod-db", 5432)
 	store := newFakeStorage(spec)
 	m := managerWith(store)
+	m.SetNodeAgentID("remote-agent")
 
 	// Install directly as Pending, bypassing a real connect, to simulate a
 	// tunnel that is mid-connect when its storage row disappears.
@@ -433,6 +435,94 @@ func TestReconcileDefersDropOnPendingTunnel(t *testing.T) {
 	}
 	if got := tun.GetStatus().State; got != types.TunnelStatePending {
 		t.Fatalf("got state %s, want pending (deferred, untouched)", got)
+	}
+}
+
+// TestReconcileDropsDelegatedPendingTunnelMissingFromStorage is the merge-
+// blocker regression guard: a tunnel delegated to a remote agent (AgentID
+// set, RunOnThisNode false) has no local session or forwarder for Stop to
+// race against, so the Pending-deferral mitigation must not apply to it.
+// internal/agent/coordinator.go parks a delegated tunnel in Pending as its
+// STEADY STATE — "awaiting agent <id>" — for as long as it is unattached or
+// attached, so Pending never settles into Active/Failed on its own. Deferring
+// dropTunnel here unconditionally (the pre-fix behavior) would mean the
+// tunnel is never removed once its storage row disappears (e.g. a
+// replace-mode import), leaving a permanent ghost entry in m.tunnels with no
+// backing storage row. This spec deliberately leaves the manager's
+// nodeAgentID at its zero value (empty) against AgentID "remote-agent", so
+// RunOnThisNode is false and dropTunnel must act immediately.
+func TestReconcileDropsDelegatedPendingTunnelMissingFromStorage(t *testing.T) {
+	spec := remoteSpec("id-1", "prod-db", 5432)
+	store := newFakeStorage(spec)
+	m := managerWith(store)
+	// Deliberately no SetNodeAgentID: nodeAgentID stays "", so
+	// RunOnThisNode("", "remote-agent") is false — this tunnel is delegated.
+
+	// Install directly as Pending, bypassing a real connect, to simulate a
+	// delegated tunnel parked in Pending by the agent coordinator.
+	m.mu.Lock()
+	m.tunnels["id-1"] = &Tunnel{
+		Spec:      spec,
+		CreatedAt: spec.CreatedAt,
+		ctx:       context.Background(),
+		Status: &types.TunnelStatus{
+			TunnelID: "id-1",
+			State:    types.TunnelStatePending,
+		},
+	}
+	m.mu.Unlock()
+
+	_ = store.Delete(context.Background(), "id-1")
+
+	if err := m.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+
+	if _, err := m.Get("id-1"); err == nil {
+		t.Fatal("expected the delegated Pending tunnel to be dropped, not deferred forever, once its storage row disappeared")
+	}
+}
+
+// TestReconcileUpsertsDelegatedPendingTunnelSpecChange is the merge-blocker
+// regression guard for the upsertTunnel path: a delegated tunnel (AgentID
+// set, RunOnThisNode false) sitting in Pending whose stored spec changed must
+// have the new spec adopted into the manager, not deferred forever. Without
+// the RunOnThisNode gate, an imported spec change (e.g. a new LocalPort) would
+// never land while the coordinator kept the tunnel parked in Pending.
+func TestReconcileUpsertsDelegatedPendingTunnelSpecChange(t *testing.T) {
+	spec := remoteSpec("id-1", "prod-db", 5432)
+	store := newFakeStorage(spec)
+	m := managerWith(store)
+	// Deliberately no SetNodeAgentID: RunOnThisNode is false for this spec.
+
+	// Install directly as Pending — as the agent coordinator would leave it —
+	// with the OLD spec, standing in for a tunnel already adopted by a prior
+	// Reconcile pass.
+	m.mu.Lock()
+	m.tunnels["id-1"] = &Tunnel{
+		Spec:      spec,
+		CreatedAt: spec.CreatedAt,
+		ctx:       context.Background(),
+		Status: &types.TunnelStatus{
+			TunnelID: "id-1",
+			State:    types.TunnelStatePending,
+		},
+	}
+	m.mu.Unlock()
+
+	updated := remoteSpec("id-1", "prod-db", 15432)
+	_ = store.Save(context.Background(), updated)
+
+	if err := m.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+
+	tun, err := m.Get("id-1")
+	if err != nil {
+		t.Fatalf("tunnel id-1 vanished: %v", err)
+	}
+	if tun.Spec.LocalPort != 15432 {
+		t.Fatalf("got LocalPort %d, want 15432 — a delegated Pending tunnel's spec change must not be deferred forever", tun.Spec.LocalPort)
 	}
 }
 

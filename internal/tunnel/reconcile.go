@@ -202,6 +202,11 @@ func hopsEquivalent(a, b []types.Hop) bool {
 func (m *Manager) dropTunnel(id string) {
 	m.mu.RLock()
 	tun, ok := m.tunnels[id]
+	var nodeID, agentID string
+	if ok {
+		nodeID = m.nodeAgentID
+		agentID = tun.Spec.AgentID
+	}
 	m.mu.RUnlock()
 	if !ok {
 		return
@@ -209,17 +214,25 @@ func (m *Manager) dropTunnel(id string) {
 
 	// I1 mitigation — this narrows the race but does NOT close it; see the
 	// task report's "Known issue" section for the root cause and the real
-	// fix. A Pending tunnel is mid-connect: connectTunnel (manager.go) writes
-	// tunnel.session / tunnel.multiSession / tunnel.forwarder with no lock,
-	// while Tunnel.Stop reads them under t.mu. Stopping here is exactly what
-	// triggers that race, so defer to a later reconcile pass instead, once
-	// the tunnel has settled into Active or Failed. The same check is applied
-	// in upsertTunnel and, for desired-state enforcement, in applyDesired —
-	// all three of Reconcile's paths to calling Tunnel.Stop skip a Pending
-	// tunnel rather than acting on it.
-	if status := tun.GetStatus(); status != nil && status.State == types.TunnelStatePending {
-		log.Info().Str("tunnel_id", id).Msg("reconcile: deferring drop, tunnel is mid-connect")
-		return
+	// fix. A Pending tunnel is mid-connect *only when it runs on this node*:
+	// connectTunnel (manager.go) writes tunnel.session / tunnel.multiSession /
+	// tunnel.forwarder with no lock, while Tunnel.Stop reads them under t.mu,
+	// so stopping a locally-run Pending tunnel here is exactly what triggers
+	// that race — defer to a later reconcile pass instead, once it has
+	// settled into Active or Failed. A tunnel delegated to a remote agent
+	// (RunOnThisNode false) has no local session/forwarder to race at all:
+	// the coordinator (internal/agent/coordinator.go) parks a delegated
+	// tunnel in Pending as its steady state for as long as it is awaiting or
+	// attached to an agent, so treating that Pending the same way would defer
+	// forever, not "later". The same RunOnThisNode-gated check is applied in
+	// upsertTunnel and, for desired-state enforcement, in applyDesired — all
+	// three of Reconcile's paths to calling Tunnel.Stop skip a Pending
+	// tunnel only when it is one this node would actually be racing.
+	if RunOnThisNode(nodeID, agentID) {
+		if status := tun.GetStatus(); status != nil && status.State == types.TunnelStatePending {
+			log.Info().Str("tunnel_id", id).Msg("reconcile: deferring drop, locally-run tunnel is mid-connect")
+			return
+		}
 	}
 
 	m.mu.Lock()
@@ -256,11 +269,25 @@ func (m *Manager) upsertTunnel(ctx context.Context, spec *types.TunnelSpec) {
 	if existed {
 		// I1 mitigation — see dropTunnel's comment and the report's "Known
 		// issue" section: narrows, does not close, the Stop/connectTunnel
-		// race. dropTunnel, upsertTunnel, and applyDesired's desired-state
-		// enforcement all skip a Pending tunnel rather than calling Stop on it.
-		if status := existing.GetStatus(); status != nil && status.State == types.TunnelStatePending {
-			log.Info().Str("tunnel_id", spec.ID).Msg("reconcile: deferring upsert, tunnel is mid-connect")
-			return
+		// race, and only applies to a tunnel that runs on THIS node. A
+		// delegated tunnel (RunOnThisNode false) has no local session or
+		// forwarder for Stop to race against — the coordinator
+		// (internal/agent/coordinator.go) parks it in Pending as its steady
+		// state, so deferring unconditionally would mean forever, never
+		// applying the storage change. dropTunnel, upsertTunnel, and
+		// applyDesired's desired-state enforcement all skip a Pending tunnel
+		// rather than calling Stop on it, but only when RunOnThisNode is true
+		// for that tunnel.
+		m.mu.RLock()
+		nodeID := m.nodeAgentID
+		agentID := existing.Spec.AgentID
+		m.mu.RUnlock()
+
+		if RunOnThisNode(nodeID, agentID) {
+			if status := existing.GetStatus(); status != nil && status.State == types.TunnelStatePending {
+				log.Info().Str("tunnel_id", spec.ID).Msg("reconcile: deferring upsert, locally-run tunnel is mid-connect")
+				return
+			}
 		}
 	}
 
