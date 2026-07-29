@@ -2061,6 +2061,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -2310,6 +2311,31 @@ func TestHandleImportConfigRejectsUnknownMode(t *testing.T) {
 	}
 }
 
+func TestHandleImportConfigReportsStoredNameConflictAsConflict(t *testing.T) {
+	// Two stored tunnels whose names differ only by surrounding whitespace make
+	// an archive entry genuinely ambiguous, so backup.Plan refuses. The fault is
+	// in server state, not in the user's file — reporting 400 would tell them a
+	// perfectly valid archive is broken.
+	store := newBackupTestStorage(
+		backupTestSpec("id-1", "prod-db", 5432),
+		backupTestSpec("id-2", "prod-db ", 5433),
+	)
+	srv := newBackupTestServer(t, store)
+
+	archive := backup.Archive{
+		Version: backup.SchemaVersion,
+		Tunnels: []backup.TunnelEntry{backup.EntryFromSpec(backupTestSpec("", "prod-db", 5432))},
+	}
+
+	rec := postImport(t, srv, "", archive)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("got status %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "prod-db") {
+		t.Errorf("response should name the conflicting tunnels, got %s", rec.Body.String())
+	}
+}
+
 func TestHandleImportConfigReturnsValidationDetails(t *testing.T) {
 	srv := newBackupTestServer(t, newBackupTestStorage())
 
@@ -2458,7 +2484,11 @@ func (s *Server) handleImportConfig(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		s.BadRequest(w, err.Error())
+		// Plan also refuses when the STORED data is ambiguous — two tunnels
+		// whose names differ only by surrounding whitespace. That is a conflict
+		// in server state, not a defect in the user's file, so it must not be
+		// reported as a bad request.
+		s.ConflictError(w, err.Error())
 		return
 	}
 
