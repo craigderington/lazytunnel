@@ -46,6 +46,7 @@ func init() {
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(stopCmd)
+	rootCmd.AddCommand(exportCmd)
 	rootCmd.AddCommand(versionCmd)
 }
 
