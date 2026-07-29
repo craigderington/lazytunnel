@@ -190,10 +190,20 @@ Output goes to stdout by default, so it pipes and redirects cleanly — useful
 in a cron job or when committing the archive to a config repository. When
 `-o` is used, the file is created with `0600` permissions, and an existing
 file at that path is `chmod`'d to `0600` too, so re-running the export into
-the same path never leaves it world- or group-readable.
+the same path never leaves it world- or group-readable. When `-o` is used,
+the confirmation line `Wrote <file> (<n> bytes)` is printed to **stderr**, not
+stdout — that matters if you're piping stdout elsewhere, since the
+confirmation won't be mixed into the archive data.
 
 The archive contains hostnames, SSH usernames and key paths, but no key
 material.
+
+`tunnelctl export` and `tunnelctl import` do not send an `Authorization`
+header, and there is no flag to supply a bearer token — `export.go` and
+`import.go` issue a bare `http.Get`/`http.Post`. These commands therefore only
+work against a server with authentication disabled (no JWT secret
+configured), even though `docs/api-reference.md` documents both routes as
+requiring auth when a secret is set.
 
 ### import
 
@@ -238,7 +248,20 @@ Applied:
 1 created, 1 updated, 1 skipped, 0 deleted
 ```
 
-`--dry-run` stops after printing `Plan:` and writes nothing.
+`--dry-run` stops after printing `Plan:` and writes nothing, printing a final
+`Dry run: nothing was written.` line so that's unambiguous from the output
+alone:
+
+```
+$ tunnelctl import --dry-run tunnels.json
+Plan:
+  update  prod-db
+  create  staging-api
+  skip    socks-jump   identical to stored tunnel
+
+1 created, 1 updated, 1 skipped, 0 deleted
+Dry run: nothing was written.
+```
 
 With `--replace`, deletions show as `DELETE` in the plan, and unless `-y` /
 `--yes` is given, they are confirmed before anything is applied:
@@ -254,17 +277,26 @@ Plan:
 --replace deletes 1 tunnel(s). Continue? [y/N]
 ```
 
-Answering anything other than `y` prints `Aborted.` and exits `0` without
-writing. If stdin is not interactive (for example, a cron job) and deletions
-are pending, `import` does not guess at an answer: it exits non-zero with a
-message pointing at `--yes`, rather than silently treating end-of-input as a
-decline.
+Answering `y` or `Y` confirms the deletions; anything else (including a bare
+Enter) prints `Aborted.` and exits `0` without writing — the confirmation
+check lowercases the answer before comparing it. If stdin is not interactive
+(for example, a cron job) and deletions are pending, `import` does not guess
+at an answer: it exits non-zero with a message pointing at `--yes`, rather
+than silently treating end-of-input as a decline.
 
 Import is validate-then-write, not transactional — there is no rollback if a
 write fails partway through. On a partial failure the command still prints an
 `Applied:` report naming exactly which tunnels landed, then exits non-zero.
 Re-running an unmodified or previously-failed archive is safe: unchanged
 entries are reported as `skip`, so a merge-mode import converges.
+
+The previewed `Plan:` and the applied request are two **independent** plans —
+the server recomputes the plan from live storage on each request, it does not
+reuse the preview's computed plan. A tunnel created (or deleted) on the
+server between the preview and the confirmed apply is not reflected in what
+you confirmed, so with `--replace` a tunnel that appeared after the preview
+was printed can still be deleted by the apply without ever showing up in the
+plan you approved.
 
 ## Configuration File
 

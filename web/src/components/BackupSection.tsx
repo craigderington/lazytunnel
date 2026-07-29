@@ -96,6 +96,7 @@ export function BackupSection() {
 
   const handleDownload = async () => {
     setError(null)
+    setBusy(true)
     try {
       const blob = await api.exportConfig()
       const url = URL.createObjectURL(blob)
@@ -108,6 +109,8 @@ export function BackupSection() {
       URL.revokeObjectURL(url)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Export failed')
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -172,7 +175,7 @@ export function BackupSection() {
             no key material.
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={handleDownload}>
+        <Button variant="outline" size="sm" disabled={busy} onClick={handleDownload}>
           Download
         </Button>
       </div>

@@ -348,6 +348,14 @@ Query parameters:
   value is a `400`, not a silent no-op, so a typo can never turn a dry run
   into a real (and, combined with `mode=replace`, destructive) import.
 
+A `dry_run=true` preview request and the later `dry_run=false` apply request
+are two **independent** plans: the server recomputes the plan from live
+storage on each request rather than reusing what the preview computed. A
+tunnel created (or deleted) on the server in between is not reflected in the
+plan that was previewed and confirmed, so with `mode=replace` a tunnel that
+appears after the preview can still be deleted by the apply without ever
+having shown up as a `DELETE` in the confirmed plan.
+
 Tunnels are matched by **name**, trimmed of surrounding whitespace on both
 sides of the comparison. A matched tunnel keeps its existing ID, owner and
 creation time — only its configuration changes. An entry identical to what is
@@ -374,8 +382,14 @@ Responses:
 - `400 Bad Request` — malformed JSON body or an unknown `mode`/`dry_run`
   value. Body: `{"code": "BAD_REQUEST", "message": "...", "timestamp": "..."}`.
 - `400 Bad Request` — the archive itself failed validation (bad `version`,
-  an invalid entry field, and so on). All problems are collected and returned
-  together so the file can be fixed in one pass:
+  an invalid entry field, and so on). Per-entry problems (an entry with a
+  missing `remote_host`, an unknown `type`, and so on) are all collected and
+  returned together, so a file with several bad entries can be fixed in one
+  pass. That guarantee has one exception: a nil/missing archive or an
+  unsupported `version` short-circuits validation with a single archive-level
+  error (`index: -1`) before any entry is examined at all — in that case you
+  get exactly one problem back per request, fix it, and re-submit to see the
+  next layer of errors, if any:
   ```json
   {
     "code": "VALIDATION_ERROR",
