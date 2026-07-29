@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 const sampleArchiveJSON = `{"version":1,"exported_at":"2026-07-29T08:40:12Z","source":"lazytunnel/test","tunnels":[]}`
@@ -35,9 +34,7 @@ func exportTestServer(t *testing.T, status int, body string) *httptest.Server {
 func callExport(t *testing.T, serverURL, output string) (string, error) {
 	t.Helper()
 
-	prevServer := viper.GetString("server")
-	viper.Set("server", serverURL)
-	t.Cleanup(func() { viper.Set("server", prevServer) })
+	withTestServerURL(t, serverURL)
 
 	prevOutput := exportOutput
 	exportOutput = output
@@ -114,5 +111,48 @@ func TestExportDoesNotWriteFileOnServerError(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatal("a failed export must not leave a file behind")
+	}
+}
+
+func TestExportFixesPermissionsOnExistingFile(t *testing.T) {
+	ts := exportTestServer(t, http.StatusOK, sampleArchiveJSON)
+	path := filepath.Join(t.TempDir(), "backup.json")
+
+	// Pre-create the file with world-readable permissions (simulating a previous export).
+	if err := os.WriteFile(path, []byte("old content"), 0o644); err != nil {
+		t.Fatalf("failed to pre-create file: %v", err)
+	}
+
+	// Verify it starts with 0644 permissions.
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("failed to stat pre-created file: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o644 {
+		t.Fatalf("pre-created file should have 0644, got %o", perm)
+	}
+
+	// Run the export to overwrite it.
+	_, err = callExport(t, ts.URL, path)
+	if err != nil {
+		t.Fatalf("runExport returned error: %v", err)
+	}
+
+	// Verify the file now has 0600 permissions.
+	info, err = os.Stat(path)
+	if err != nil {
+		t.Fatalf("failed to stat file after export: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("exported file should have 0600 after overwriting, got %o", perm)
+	}
+
+	// Verify the content was updated.
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read file: %v", err)
+	}
+	if string(contents) != sampleArchiveJSON {
+		t.Errorf("file contents mismatch:\n got %s\nwant %s", contents, sampleArchiveJSON)
 	}
 }

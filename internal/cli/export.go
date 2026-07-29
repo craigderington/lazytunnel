@@ -59,6 +59,12 @@ func runExport(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to write %s: %w", exportOutput, err)
 	}
 
+	// os.WriteFile only applies mode when creating; chmod ensures mode is set
+	// even when overwriting an existing file.
+	if err := os.Chmod(exportOutput, 0o600); err != nil {
+		return fmt.Errorf("failed to set permissions on %s: %w", exportOutput, err)
+	}
+
 	fmt.Fprintf(cmd.ErrOrStderr(), "Wrote %s (%d bytes)\n", exportOutput, len(body))
 	return nil
 }
