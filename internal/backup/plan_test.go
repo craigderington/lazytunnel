@@ -2,6 +2,7 @@ package backup
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -435,5 +436,45 @@ func TestPlanFallsBackToUUIDWhenNewIDNeverFreesUp(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Plan did not return within 2s — the ID-mint loop appears to be unbounded")
+	}
+}
+
+// TestPlanRefusesWhenStoredNamesCollideAfterTrimming pins the gap the
+// reviewer found in the trim fix itself: the database's UNIQUE(name)
+// constraint compares raw strings, so two DISTINCT stored rows — "prod-db"
+// and "prod-db " — can both exist and collide onto the same trimmed byName
+// key. Before this fix, the second row silently overwrote the first in the
+// map, and one of the two tunnels vanished from the plan entirely: not
+// created, updated, skipped, or deleted, just absent. There is no correct
+// tunnel to prefer, so Plan must refuse to run rather than guess — and it
+// must report this as a problem with the stored data, not the archive file,
+// so callers don't mislabel a perfectly valid archive as invalid.
+func TestPlanRefusesWhenStoredNamesCollideAfterTrimming(t *testing.T) {
+	a := sampleSpec()
+	a.Name = "prod-db"
+	a.ID = "id-a"
+
+	b := sampleSpec()
+	b.Name = "prod-db " // trailing space: a distinct row under UNIQUE(name)
+	b.ID = "id-b"
+
+	entry := validEntry("prod-db")
+
+	plan, err := Plan([]*types.TunnelSpec{a, b}, archiveOf(entry), testOptions(ModeReplace))
+	if err == nil {
+		t.Fatal("expected an error for colliding stored names, got nil")
+	}
+	if plan != nil {
+		t.Fatal("expected a nil plan — no caller should be able to act on a partial diff")
+	}
+
+	var invalid ArchiveInvalidError
+	if errors.As(err, &invalid) {
+		t.Fatal("got ArchiveInvalidError — this is a problem with the stored data, not the archive file, and must not be reported as an invalid archive")
+	}
+
+	msg := err.Error()
+	if !strings.Contains(msg, `"prod-db"`) || !strings.Contains(msg, `"prod-db "`) {
+		t.Errorf("error message must name both conflicting tunnels, got %q", msg)
 	}
 }

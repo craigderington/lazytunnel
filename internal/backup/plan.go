@@ -125,10 +125,24 @@ func Plan(current []*types.TunnelSpec, archive *Archive, opts PlanOptions) (*Imp
 	// that exact tunnel would fail to match its own trimmed archive entry and
 	// churn its identity — a delete+recreate in replace mode, a spurious
 	// duplicate in merge mode.
+	//
+	// Trimming introduces a case that could not exist before: the database's
+	// UNIQUE(name) constraint compares raw strings, so two DISTINCT stored
+	// rows — e.g. "prod-db" and "prod-db " — can collide onto the same
+	// trimmed key. Silently letting the second overwrite the first in this
+	// map would make one of them vanish from the plan entirely: not created,
+	// updated, skipped, or deleted, just absent. There is no correct way to
+	// pick a winner, so Plan refuses to run rather than guess.
 	byName := make(map[string]*types.TunnelSpec, len(current))
 	usedIDs := make(map[string]bool, len(current))
 	for _, spec := range current {
-		byName[strings.TrimSpace(spec.Name)] = spec
+		key := strings.TrimSpace(spec.Name)
+		if prev, dup := byName[key]; dup {
+			return nil, fmt.Errorf(
+				"stored tunnels %q and %q have names that differ only by surrounding whitespace; rename one before importing",
+				prev.Name, spec.Name)
+		}
+		byName[key] = spec
 		usedIDs[spec.ID] = true
 	}
 
