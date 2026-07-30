@@ -16,17 +16,18 @@ import (
 )
 
 var (
-	tunnelName    string
-	tunnelType    string
-	localPort     int
-	remoteHost    string
-	remotePort    int
-	hops          []string
-	sshUser       string
-	sshKey        string
-	autoReconnect bool
-	keepAlive     int
-	maxRetries    int
+	tunnelName       string
+	tunnelType       string
+	localPort        int
+	localBindAddress string
+	remoteHost       string
+	remotePort       int
+	hops             []string
+	sshUser          string
+	sshKey           string
+	autoReconnect    bool
+	keepAlive        int
+	maxRetries       int
 )
 
 // createTunnelRequest mirrors the wire format of api.CreateTunnelRequest.
@@ -47,15 +48,16 @@ var (
 // agree on their snake_case tags, and the extra fields types.Hop carries are
 // ignored by the server's decoder.
 type createTunnelRequest struct {
-	Name          string      `json:"name"`
-	Type          string      `json:"type"`
-	Hops          []types.Hop `json:"hops"`
-	LocalPort     int         `json:"localPort"`
-	RemoteHost    string      `json:"remoteHost,omitempty"`
-	RemotePort    int         `json:"remotePort,omitempty"`
-	AutoReconnect bool        `json:"autoReconnect"`
-	KeepAlive     int         `json:"keepAlive"`
-	MaxRetries    int         `json:"maxRetries"`
+	Name             string      `json:"name"`
+	Type             string      `json:"type"`
+	Hops             []types.Hop `json:"hops"`
+	LocalPort        int         `json:"localPort"`
+	LocalBindAddress string      `json:"localBindAddress,omitempty"`
+	RemoteHost       string      `json:"remoteHost,omitempty"`
+	RemotePort       int         `json:"remotePort,omitempty"`
+	AutoReconnect    bool        `json:"autoReconnect"`
+	KeepAlive        int         `json:"keepAlive"`
+	MaxRetries       int         `json:"maxRetries"`
 }
 
 var createCmd = &cobra.Command{
@@ -89,6 +91,8 @@ func init() {
 	createCmd.Flags().StringVar(&tunnelName, "name", "", "tunnel name (required)")
 	createCmd.Flags().StringVar(&tunnelType, "type", "local", "tunnel type: local, remote, or dynamic")
 	createCmd.Flags().IntVar(&localPort, "local-port", 0, "local port to bind")
+	createCmd.Flags().StringVar(&localBindAddress, "local-bind-address", "127.0.0.1",
+		"local address to bind (127.0.0.1 for loopback only, 0.0.0.0 for all interfaces)")
 	createCmd.Flags().StringVar(&remoteHost, "remote-host", "", "remote host:port (for local tunnels)")
 	createCmd.Flags().IntVar(&remotePort, "remote-port", 0, "remote port (for remote tunnels)")
 	createCmd.Flags().StringArrayVar(&hops, "hop", []string{}, "SSH hop in format host:port (can specify multiple for multi-hop)")
@@ -176,15 +180,16 @@ func buildCreateRequest() (createTunnelRequest, error) {
 	}
 
 	return createTunnelRequest{
-		Name:          tunnelName,
-		Type:          string(ttype),
-		Hops:          hopList,
-		LocalPort:     localPort,
-		RemoteHost:    remHost,
-		RemotePort:    remPort,
-		AutoReconnect: autoReconnect,
-		KeepAlive:     keepAlive,
-		MaxRetries:    maxRetries,
+		Name:             tunnelName,
+		Type:             string(ttype),
+		Hops:             hopList,
+		LocalPort:        localPort,
+		LocalBindAddress: localBindAddress,
+		RemoteHost:       remHost,
+		RemotePort:       remPort,
+		AutoReconnect:    autoReconnect,
+		KeepAlive:        keepAlive,
+		MaxRetries:       maxRetries,
 	}, nil
 }
 

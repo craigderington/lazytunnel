@@ -44,6 +44,7 @@ func withCreateFlags(t *testing.T) {
 	prevName := tunnelName
 	prevType := tunnelType
 	prevLocalPort := localPort
+	prevLocalBindAddress := localBindAddress
 	prevRemoteHost := remoteHost
 	prevRemotePort := remotePort
 	prevHops := hops
@@ -57,6 +58,7 @@ func withCreateFlags(t *testing.T) {
 		tunnelName = prevName
 		tunnelType = prevType
 		localPort = prevLocalPort
+		localBindAddress = prevLocalBindAddress
 		remoteHost = prevRemoteHost
 		remotePort = prevRemotePort
 		hops = prevHops
@@ -70,6 +72,7 @@ func withCreateFlags(t *testing.T) {
 	tunnelName = "prod-db"
 	tunnelType = "local"
 	localPort = 5432
+	localBindAddress = "127.0.0.1"
 	remoteHost = "db.internal.example.com:5432"
 	remotePort = 0
 	hops = []string{"bastion.example.com:22"}
@@ -419,5 +422,55 @@ func TestBuildCreateRequestKeepAliveIsSeconds(t *testing.T) {
 	}
 	if req.KeepAlive != 30 {
 		t.Errorf("got KeepAlive %d, want 30 (whole seconds, not nanoseconds)", req.KeepAlive)
+	}
+}
+
+func TestLocalBindAddressFlagDefaultsToLoopback(t *testing.T) {
+	f := createCmd.Flags().Lookup("local-bind-address")
+	if f == nil {
+		t.Fatal("--local-bind-address is not registered")
+	}
+	if f.DefValue != "127.0.0.1" {
+		t.Fatalf("got default %q, want 127.0.0.1 — a CLI-created tunnel must not listen on all interfaces by accident", f.DefValue)
+	}
+}
+
+func TestBuildCreateRequestCarriesBindAddress(t *testing.T) {
+	withCreateFlags(t)
+
+	req, err := buildCreateRequest()
+	if err != nil {
+		t.Fatalf("buildCreateRequest returned error: %v", err)
+	}
+	if req.LocalBindAddress != "127.0.0.1" {
+		t.Fatalf("got LocalBindAddress %q, want 127.0.0.1", req.LocalBindAddress)
+	}
+
+	got := decodeAsServer(t, req)
+	if got.LocalBindAddress != "127.0.0.1" {
+		t.Fatalf("the server received LocalBindAddress %q, want 127.0.0.1", got.LocalBindAddress)
+	}
+	if errs := api.ValidateRequest(&got); len(errs) != 0 {
+		t.Fatalf("server would reject a loopback bind address: %+v", errs)
+	}
+}
+
+func TestBuildCreateRequestPassesExplicitAllInterfaces(t *testing.T) {
+	// The escape hatch matters as much as the safe default: an operator who
+	// genuinely wants all interfaces must be able to say so.
+	withCreateFlags(t)
+	localBindAddress = "0.0.0.0"
+
+	req, err := buildCreateRequest()
+	if err != nil {
+		t.Fatalf("buildCreateRequest returned error: %v", err)
+	}
+
+	got := decodeAsServer(t, req)
+	if got.LocalBindAddress != "0.0.0.0" {
+		t.Fatalf("got LocalBindAddress %q, want 0.0.0.0 transmitted unchanged", got.LocalBindAddress)
+	}
+	if errs := api.ValidateRequest(&got); len(errs) != 0 {
+		t.Fatalf("server would reject an explicit 0.0.0.0: %+v", errs)
 	}
 }
