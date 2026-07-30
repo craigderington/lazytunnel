@@ -230,7 +230,11 @@ describe the intended future state, not the current system:
 - Rate limiting is per client (authenticated user ID if present, otherwise
   source IP) via a token-bucket limiter (`internal/api/ratelimit.go`,
   `RateLimiter.extractClientID`); there is no role concept in it
-- Proper CORS configuration
+- Proper CORS configuration. `/api/v1/ws` shares the same allowlist via
+  `CheckOrigin`, so any reverse proxy that rewrites `Host` (the bundled nginx and
+  the Vite dev server both do) needs the browser-facing origin listed in
+  `server.cors.allowed_origins` or the WebSocket handshake is rejected while
+  proxied HTTP still works
 
 ### Audit Logging
 - Log all tunnel create/delete/modify operations

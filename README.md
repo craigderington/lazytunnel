@@ -318,7 +318,7 @@ lazytunnel takes security seriously:
 - **SSH Key Management**: Secure handling of SSH keys with support for key-based authentication
 - **Read-only SSH Mounts**: SSH keys mounted read-only in Docker containers
 - **No Plaintext Passwords**: Authentication via SSH keys and SSH agent
-- **CORS Configuration**: Proper CORS headers for API security
+- **CORS Configuration**: Proper CORS headers for API security. Behind a reverse proxy that rewrites the `Host` header (the bundled nginx and the Vite dev server both do), the browser-facing origin must be listed in `server.cors.allowed_origins` or the `/api/v1/ws` WebSocket handshake is rejected even though proxied HTTP calls keep working.
 - **Input Validation**: Comprehensive validation of tunnel configurations
 - **Isolated Tunnels**: Each tunnel runs in its own goroutine with proper error handling
 - **Future**: TLS 1.3 for API, OAuth2/OIDC, and KMS integration planned

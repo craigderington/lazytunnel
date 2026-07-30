@@ -24,5 +24,11 @@ ReadWritePaths=/home/cd/Work/lazytunnel
 # Environment
 Environment="PATH=/usr/local/bin:/usr/bin:/bin"
 
+# Needed only when a browser reaches the UI through a proxy that rewrites the
+# Host header (the Vite dev server does) — without it the WebSocket at
+# /api/v1/ws is rejected and live status push never connects. The correct
+# origin is deployment-specific, so set it before uncommenting.
+#Environment="LAZYTUNNEL_SERVER_CORS_ALLOWED_ORIGINS=http://localhost:5173"
+
 [Install]
 WantedBy=multi-user.target

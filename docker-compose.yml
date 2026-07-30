@@ -9,6 +9,12 @@ services:
     network_mode: host  # Use host network so tunnels bind to host ports
     environment:
       - ADDR=:8080
+      # The web container's nginx proxy rewrites Host (see nginx.conf's
+      # proxy_set_header Host directive, which also strips the port), so the
+      # browser's own origin has to be listed here or the WebSocket handshake
+      # at /api/v1/ws is rejected and live tunnel-status push never connects.
+      # Proxied HTTP calls look same-origin to the browser and work without it.
+      - LAZYTUNNEL_SERVER_CORS_ALLOWED_ORIGINS=http://localhost:3000
     volumes:
       - tunnel-data:/app/data  # Persistent SQLite database
       - ${HOME}/.ssh:/root/.ssh:ro  # Mount SSH keys (read-only)
