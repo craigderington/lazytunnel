@@ -1,0 +1,39 @@
+[Unit]
+Description=LazyTunnel SSH Tunnel Manager
+Documentation=https://github.com/craigderington/lazytunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%I
+Group=%I
+WorkingDirectory=/home/%I/Work/lazytunnel
+ExecStart=/home/%I/Work/lazytunnel/server --addr=:8080
+Restart=on-failure
+RestartSec=5s
+StartLimitInterval=60s
+StartLimitBurst=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lazytunnel
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/%I/Work/lazytunnel
+
+# Environment
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Environment="LAZYTUNNEL_DB_PATH=/home/%I/Work/lazytunnel/tunnels.db"
+
+# Needed only when a browser reaches the UI through a proxy that rewrites the
+# Host header (the Vite dev server does) — without it the WebSocket at
+# /api/v1/ws is rejected and live status push never connects. The correct
+# origin is deployment-specific, so set it before uncommenting.
+#Environment="LAZYTUNNEL_SERVER_CORS_ALLOWED_ORIGINS=http://localhost:5173"
+
+[Install]
+WantedBy=multi-user.target

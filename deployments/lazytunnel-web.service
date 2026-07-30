@@ -1,0 +1,30 @@
+[Unit]
+Description=lazytunnel Web Interface (Vite Dev Server)
+After=network-online.target lazytunnel-server.service
+Wants=network-online.target
+Requires=lazytunnel-server.service
+
+[Service]
+Type=simple
+User=cd
+Group=cd
+WorkingDirectory=/home/cd/Work/lazytunnel/web
+ExecStart=/home/cd/.local/share/mise/installs/node/25.2.1/bin/npm run dev
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/cd/Work/lazytunnel/web
+
+# Environment
+Environment="PATH=/home/cd/.local/share/mise/installs/node/25.2.1/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="NODE_ENV=development"
+
+[Install]
+WantedBy=multi-user.target

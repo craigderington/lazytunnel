@@ -1,0 +1,45 @@
+[Unit]
+Description=LazyTunnel Web Frontend
+Documentation=https://github.com/craigderington/lazytunnel
+After=network-online.target lazytunnel-backend@%i.service
+Wants=network-online.target
+Requires=lazytunnel-backend@%i.service
+
+[Service]
+Type=simple
+User=%I
+Group=%I
+WorkingDirectory=/home/%I/Work/lazytunnel/web
+ExecStart=/home/%I/.local/share/mise/shims/npm run dev -- --host --port 5173
+Restart=on-failure
+RestartSec=5s
+StartLimitInterval=60s
+StartLimitBurst=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lazytunnel-frontend
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/%I/Work/lazytunnel/web
+# The mise shim re-execs `mise`, which writes a cache/state under $HOME
+ReadWritePaths=/home/%I/.cache/mise
+ReadWritePaths=/home/%I/.local/state/mise
+
+# Environment
+Environment="HOME=/home/%I"
+Environment="PATH=/home/%I/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin"
+Environment="NODE_ENV=development"
+# VITE_API_URL is intentionally not set here: config.ts falls back to the
+# relative path '/api/v1', which Vite's dev-server proxy forwards to the
+# backend. Setting VITE_API_URL bypasses that proxy, makes the browser see
+# the API as cross-origin (blocked unless server.cors.allowed_origins lists
+# it), and hardcodes "localhost" — which resolves to the *browser's* own
+# machine, not this host, breaking any remote browser even though this unit
+# binds --host specifically to allow them.
+
+[Install]
+WantedBy=multi-user.target
