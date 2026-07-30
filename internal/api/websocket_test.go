@@ -143,3 +143,40 @@ func TestWebSocketHandshakeSameOriginSucceedsWithEmptyAllowlist(t *testing.T) {
 	}
 	conn.Close()
 }
+
+// TestNewServerAppliesAllowlistToSuppliedWebSocketManager guards the footgun
+// that Config.WebSocket used to be: NewServer normalizes Config.AllowedOrigins
+// and must push that list onto a caller-supplied manager. Previously the
+// manager kept whatever allowlist it was constructed with, so supplying one
+// silently bypassed the server's CORS allowlist on the WebSocket path.
+func TestNewServerAppliesAllowlistToSuppliedWebSocketManager(t *testing.T) {
+	// Permissive on construction, restrictive in the server config.
+	wsm := NewWebSocketManager([]string{"*"})
+	wsm.Start()
+
+	srv := NewServer(context.Background(), Config{
+		Addr:           ":0",
+		Logger:         zerolog.Nop(),
+		WebSocket:      wsm,
+		AllowedOrigins: []string{"https://app.example.com"},
+	})
+	defer srv.wsManager.Stop()
+
+	if srv.wsManager != wsm {
+		t.Fatal("NewServer replaced the supplied WebSocket manager; the test no longer exercises what it claims to")
+	}
+
+	if wsm.upgrader.CheckOrigin(requestWithOrigin("https://evil.example.com")) {
+		t.Error("got true, want false — the restrictive Config.AllowedOrigins must win over the manager's permissive construction-time wildcard")
+	}
+	if !wsm.upgrader.CheckOrigin(requestWithOrigin("https://app.example.com")) {
+		t.Error("got false, want true — an origin from Config.AllowedOrigins must be accepted by the supplied manager")
+	}
+}
+
+// requestWithOrigin builds a handshake request to /api/v1/ws carrying origin.
+func requestWithOrigin(origin string) *http.Request {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ws", nil)
+	req.Header.Set("Origin", origin)
+	return req
+}

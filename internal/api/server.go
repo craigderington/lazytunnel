@@ -84,11 +84,16 @@ func NewServer(ctx context.Context, config Config) *Server {
 	// normalized list and cannot diverge.
 	allowedOrigins, droppedOrigins := normalizeAllowedOrigins(config.AllowedOrigins)
 
-	// Initialize WebSocket manager if not provided
+	// Initialize WebSocket manager if not provided. A supplied manager gets the
+	// server's normalized allowlist applied over whatever it was constructed
+	// with — trusting the list it arrived with would let Config.WebSocket
+	// silently bypass Config.AllowedOrigins on a security path.
 	wsManager := config.WebSocket
 	if wsManager == nil {
 		wsManager = NewWebSocketManager(allowedOrigins)
 		wsManager.Start()
+	} else {
+		wsManager.SetAllowedOrigins(allowedOrigins)
 	}
 
 	// Wire up tunnel status callback to broadcast via WebSocket

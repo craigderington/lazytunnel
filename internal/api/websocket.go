@@ -67,6 +67,18 @@ func NewWebSocketManager(allowedOrigins []string) *WebSocketManager {
 	return wsm
 }
 
+// SetAllowedOrigins replaces the allowlist this manager enforces in
+// CheckOrigin. NewServer calls it on a caller-supplied manager so the
+// server's own normalized allowlist always wins over whatever list the
+// manager happened to be constructed with — otherwise passing
+// Config.WebSocket would silently bypass Config.AllowedOrigins on a security
+// path.
+func (wsm *WebSocketManager) SetAllowedOrigins(allowedOrigins []string) {
+	wsm.mu.Lock()
+	defer wsm.mu.Unlock()
+	wsm.allowedOrigins = allowedOrigins
+}
+
 // checkOrigin applies the allowlist shared with the HTTP CORS middleware, plus
 // one allowance the HTTP path gets for free and this one must make explicit:
 // same origin.
@@ -103,7 +115,11 @@ func (wsm *WebSocketManager) checkOrigin(r *http.Request) bool {
 		return true
 	}
 
-	allowed, _ := originAllowed(wsm.allowedOrigins, origin)
+	wsm.mu.RLock()
+	allowlist := wsm.allowedOrigins
+	wsm.mu.RUnlock()
+
+	allowed, _ := originAllowed(allowlist, origin)
 	return allowed
 }
 

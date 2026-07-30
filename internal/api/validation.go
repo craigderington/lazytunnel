@@ -51,12 +51,18 @@ type CreateTunnelRequest struct {
 	Hops             []HopReq `json:"hops" validate:"required,min=1,dive"`
 	LocalPort        int      `json:"localPort" validate:"min=0,max=65535"`
 	LocalBindAddress string   `json:"localBindAddress" validate:"omitempty,ip_addr|hostname"`
-	RemoteHost       string   `json:"remoteHost" validate:"required_unless=Type dynamic,omitempty,hostname|ip_addr"`
-	RemotePort       int      `json:"remotePort" validate:"required_unless=Type dynamic,omitempty,min=1,max=65535"`
-	AutoReconnect    bool     `json:"autoReconnect"`
-	KeepAlive        int      `json:"keepAlive" validate:"min=0,max=300"`
-	MaxRetries       int      `json:"maxRetries" validate:"min=0,max=100"`
-	AgentID          string   `json:"agentId" validate:"omitempty,max=100"`
+	// Only a local tunnel has a remote destination host: remote forwarding
+	// binds a port on the far side and forwards to localhost (see
+	// NewRemoteForwarder in internal/tunnel/forward.go, which reads only
+	// RemotePort and LocalPort), and dynamic is a SOCKS5 proxy with no fixed
+	// destination at all. Demanding one for `remote` rejected every documented
+	// --type remote invocation for a value nothing then read.
+	RemoteHost    string `json:"remoteHost" validate:"required_if=Type local,omitempty,hostname|ip_addr"`
+	RemotePort    int    `json:"remotePort" validate:"required_unless=Type dynamic,omitempty,min=1,max=65535"`
+	AutoReconnect bool   `json:"autoReconnect"`
+	KeepAlive     int    `json:"keepAlive" validate:"min=0,max=300"`
+	MaxRetries    int    `json:"maxRetries" validate:"min=0,max=100"`
+	AgentID       string `json:"agentId" validate:"omitempty,max=100"`
 }
 
 // HopReq represents a single hop in a validated tunnel request
@@ -100,7 +106,7 @@ func formatValidationError(e validator.FieldError) string {
 	switch tag {
 	case "required":
 		return fmt.Sprintf("%s is required", field)
-	case "required_unless":
+	case "required_unless", "required_if":
 		return fmt.Sprintf("%s is required", field)
 	case "min":
 		if param == "1" {
