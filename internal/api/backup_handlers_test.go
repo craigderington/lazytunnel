@@ -374,10 +374,15 @@ func TestHandleImportConfigRejectsOversizedBodyWith413(t *testing.T) {
 // cross-origin, preflight-free POST reaching this route: an HTML form with
 // enctype="text/plain" submits without a CORS preflight (text/plain is a
 // CORS-simple content type) and json.Decoder.Decode accepts the exact byte
-// stream such a form produces. With corsMiddleware sending
-// Access-Control-Allow-Origin: * on every route and auth disabled by
-// default, a required Content-Type is the only thing standing between an
-// arbitrary origin and the most destructive route in the API.
+// stream such a form produces. corsMiddleware no longer sends
+// Access-Control-Allow-Origin: * unconditionally — it only echoes a
+// wildcard when server.cors.allowed_origins is explicitly configured with
+// "*" — but a simple request like this reaches the handler and mutates
+// state regardless of what the response header says; the browser only
+// blocks the *response* from being read, not the request from being sent.
+// So for a deployment that does set "*" with auth disabled, a required
+// Content-Type remains the only thing standing between an arbitrary origin
+// and the most destructive route in the API. Kept as defence-in-depth.
 func TestHandleImportConfigRejectsNonJSONContentTypeWith415(t *testing.T) {
 	store := newBackupTestStorage(backupTestSpec("id-1", "prod-db", 5432))
 	srv := newBackupTestServer(t, store)

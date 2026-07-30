@@ -32,11 +32,29 @@
 
 **Files:**
 - Modify: `internal/cli/create.go` (add a request type, extract a builder, change the marshal)
+- Modify: `internal/api/validation.go:54-55` (make the destination conditional on tunnel type)
 - Test: `internal/cli/create_contract_test.go`
 
 **Interfaces:**
 - Consumes: `api.CreateTunnelRequest`, `api.HopReq`, `api.ValidateRequest` from `internal/api/validation.go`; `types.Hop` from `pkg/types`.
 - Produces: type `createTunnelRequest`; function `buildCreateRequest() (createTunnelRequest, error)`. Task 2 adds a field to both.
+
+**Two rulings from the project owner that extend this task beyond the spec:**
+
+1. **`remoteHost`/`remotePort` must become conditional on tunnel type.** They are
+   currently `validate:"required"` for every type, so a `dynamic` tunnel — a
+   SOCKS5 proxy with no destination — can never be created, even though
+   `create.go`'s own help text documents doing exactly that. Without this,
+   repairing the wire format would fix `--type local` and leave `--type dynamic`
+   broken. `internal/backup/validate.go` already treats the destination as
+   optional for dynamic tunnels, so this also stops the two validators
+   disagreeing about which tunnels are legal.
+
+2. **`--remote-host` must be transmitted for `remote` tunnels.** The original
+   code leaves `remHost` empty for every non-local type
+   (`create.go:141-143`), silently discarding the flag. A `remote` tunnel
+   forwards to a real destination so the value belongs on the wire; a `dynamic`
+   tunnel has none, so it stays empty.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -73,6 +91,55 @@ func sampleCreateRequest() createTunnelRequest {
 		KeepAlive:     30,
 		MaxRetries:    3,
 	}
+}
+
+// withCreateFlags sets the package-level create flags to a valid local-tunnel
+// configuration and restores them afterwards, so tests in this package cannot
+// leak state into each other. Capture happens before assignment — see
+// callExport in export_test.go for the same pattern.
+//
+// Tests that need a different shape call this and then override the specific
+// vars they care about; the cleanup still restores everything.
+func withCreateFlags(t *testing.T) {
+	t.Helper()
+
+	prevName := tunnelName
+	prevType := tunnelType
+	prevLocalPort := localPort
+	prevRemoteHost := remoteHost
+	prevRemotePort := remotePort
+	prevHops := hops
+	prevUser := sshUser
+	prevKey := sshKey
+	prevAutoReconnect := autoReconnect
+	prevKeepAlive := keepAlive
+	prevMaxRetries := maxRetries
+
+	t.Cleanup(func() {
+		tunnelName = prevName
+		tunnelType = prevType
+		localPort = prevLocalPort
+		remoteHost = prevRemoteHost
+		remotePort = prevRemotePort
+		hops = prevHops
+		sshUser = prevUser
+		sshKey = prevKey
+		autoReconnect = prevAutoReconnect
+		keepAlive = prevKeepAlive
+		maxRetries = prevMaxRetries
+	})
+
+	tunnelName = "prod-db"
+	tunnelType = "local"
+	localPort = 5432
+	remoteHost = "db.internal.example.com:5432"
+	remotePort = 0
+	hops = []string{"bastion.example.com:22"}
+	sshUser = "deploy"
+	sshKey = "/home/deploy/.ssh/id_ed25519"
+	autoReconnect = true
+	keepAlive = 30
+	maxRetries = 3
 }
 
 // decodeAsServer marshals the CLI's request and decodes it exactly as the
@@ -166,6 +233,90 @@ func TestCreateRequestRejectsNanosecondKeepAlive(t *testing.T) {
 	}
 }
 
+func TestDynamicTunnelNeedsNoDestination(t *testing.T) {
+	// A SOCKS5 proxy has no fixed destination. The API validator required
+	// remoteHost and remotePort for every type, so a dynamic tunnel could
+	// never be created — despite create.go's help text documenting it.
+	req := createTunnelRequest{
+		Name: "socks",
+		Type: "dynamic",
+		Hops: []types.Hop{{
+			Host:       "jumphost.example.com",
+			Port:       22,
+			User:       "deploy",
+			AuthMethod: types.AuthMethodKey,
+			KeyID:      "/home/deploy/.ssh/id_ed25519",
+		}},
+		LocalPort:     1080,
+		AutoReconnect: true,
+		KeepAlive:     30,
+		MaxRetries:    3,
+	}
+
+	got := decodeAsServer(t, req)
+
+	if errs := api.ValidateRequest(&got); len(errs) != 0 {
+		t.Fatalf("the server must accept a dynamic tunnel with no destination: %+v", errs)
+	}
+}
+
+func TestLocalTunnelStillRequiresADestination(t *testing.T) {
+	// Making the destination conditional must not weaken it for the types
+	// that genuinely need one.
+	req := sampleCreateRequest()
+	req.RemoteHost = ""
+	req.RemotePort = 0
+
+	got := decodeAsServer(t, req)
+
+	if errs := api.ValidateRequest(&got); len(errs) == 0 {
+		t.Fatal("a local tunnel with no destination must still be rejected")
+	}
+}
+
+func TestRemoteTunnelDestinationIsTransmitted(t *testing.T) {
+	// The original builder discarded --remote-host for every non-local type.
+	withCreateFlags(t)
+	tunnelType = "remote"
+	remoteHost = "internal.example.com"
+	remotePort = 9090
+
+	req, err := buildCreateRequest()
+	if err != nil {
+		t.Fatalf("buildCreateRequest returned error: %v", err)
+	}
+	if req.RemoteHost != "internal.example.com" {
+		t.Errorf("got RemoteHost %q, want internal.example.com — the flag must not be discarded", req.RemoteHost)
+	}
+	if req.RemotePort != 9090 {
+		t.Errorf("got RemotePort %d, want 9090", req.RemotePort)
+	}
+
+	got := decodeAsServer(t, req)
+	if errs := api.ValidateRequest(&got); len(errs) != 0 {
+		t.Fatalf("server would reject a remote tunnel: %+v", errs)
+	}
+}
+
+func TestDynamicTunnelSendsNoDestination(t *testing.T) {
+	withCreateFlags(t)
+	tunnelType = "dynamic"
+	remoteHost = "should-be-ignored.example.com"
+	remotePort = 9090
+	localPort = 1080
+
+	req, err := buildCreateRequest()
+	if err != nil {
+		t.Fatalf("buildCreateRequest returned error: %v", err)
+	}
+	if req.RemoteHost != "" {
+		t.Errorf("got RemoteHost %q, want empty — a SOCKS5 proxy has no destination", req.RemoteHost)
+	}
+	if req.RemotePort != 0 {
+		t.Errorf("got RemotePort %d, want 0", req.RemotePort)
+	}
+}
+
 func TestCreateRequestOmitsFieldsTheCLICannotSet(t *testing.T) {
 	// agentId has no flag, so the CLI must not send it — an empty value
 	// would be indistinguishable from a deliberate choice.
@@ -216,13 +367,35 @@ type createTunnelRequest struct {
 	Type          string      `json:"type"`
 	Hops          []types.Hop `json:"hops"`
 	LocalPort     int         `json:"localPort"`
-	RemoteHost    string      `json:"remoteHost"`
-	RemotePort    int         `json:"remotePort"`
+	RemoteHost    string      `json:"remoteHost,omitempty"`
+	RemotePort    int         `json:"remotePort,omitempty"`
 	AutoReconnect bool        `json:"autoReconnect"`
 	KeepAlive     int         `json:"keepAlive"`
 	MaxRetries    int         `json:"maxRetries"`
 }
 ```
+
+`RemoteHost` and `RemotePort` are `omitempty` because a dynamic tunnel has no
+destination, and omitting the keys makes that visible on the wire rather than
+sending empty values that look like an oversight.
+
+Then relax the API validator so a dynamic tunnel is legal. In
+`internal/api/validation.go`, change the two destination fields of
+`CreateTunnelRequest`:
+
+```go
+	RemoteHost       string   `json:"remoteHost" validate:"required_unless=Type dynamic,omitempty,hostname|ip_addr"`
+	RemotePort       int      `json:"remotePort" validate:"required_unless=Type dynamic,omitempty,min=1,max=65535"`
+```
+
+`required_unless=Type dynamic` keeps both mandatory for `local` and `remote`
+while permitting their absence for `dynamic`. The `omitempty` that follows
+short-circuits the format checks when the value is absent, so a dynamic tunnel
+does not trip `hostname|ip_addr` on an empty string.
+
+This also removes a disagreement between two validators: `internal/backup/validate.go`
+already treats the destination as optional for dynamic tunnels, so before this
+change a dynamic tunnel could be restored from a backup but never created.
 
 Now extract the request construction out of `runCreate` so it can be tested without a server. Replace the block that currently builds `spec := types.TunnelSpec{...}` — and everything above it that parses flags — with a call to a new function. The parsing logic moves verbatim; only the final struct literal changes.
 
@@ -262,10 +435,14 @@ func buildCreateRequest() (createTunnelRequest, error) {
 		})
 	}
 
-	// For local tunnels --remote-host carries a combined host:port.
+	// Destination, which differs per tunnel type:
+	//   local   — --remote-host carries a combined host:port
+	//   remote  — --remote-host is a bare host, --remote-port the port
+	//   dynamic — a SOCKS5 proxy has no fixed destination, so both stay empty
 	var remHost string
 	var remPort int
-	if ttype == types.TunnelTypeLocal {
+	switch ttype {
+	case types.TunnelTypeLocal:
 		parts := strings.Split(remoteHost, ":")
 		if len(parts) != 2 {
 			return createTunnelRequest{}, fmt.Errorf("invalid remote host format: %s (expected host:port)", remoteHost)
@@ -274,7 +451,7 @@ func buildCreateRequest() (createTunnelRequest, error) {
 		if _, err := fmt.Sscanf(parts[1], "%d", &remPort); err != nil {
 			return createTunnelRequest{}, fmt.Errorf("invalid port in remote host: %s", remoteHost)
 		}
-	} else {
+	case types.TunnelTypeRemote:
 		remHost = remoteHost
 		remPort = remotePort
 	}
@@ -316,13 +493,19 @@ Remove the now-unused `time` import from `create.go` if nothing else in the file
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./internal/cli/ -run TestCreateRequest -v && go build ./...`
-Expected: PASS — 4 tests.
+Run: `go test ./internal/cli/ ./internal/api/ -v 2>&1 | tail -30 && go build ./... && go test ./...`
+Expected: PASS — 8 new tests in `internal/cli`, and no regressions in
+`internal/api` from the validator change. Pay attention to
+`internal/api/validation_test.go`, which has existing `CreateTunnelRequest`
+cases: if any of them asserted that a missing `remoteHost` is rejected for a
+tunnel it did not give a type, the `required_unless` change may alter that
+outcome. If a test there fails, read it before touching it — decide whether the
+old expectation was correct, and say so in your report either way.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/cli/create.go internal/cli/create_contract_test.go
+git add internal/cli/create.go internal/cli/create_contract_test.go internal/api/validation.go
 git commit -m "fix(cli): send the request body the API actually decodes
 
 tunnelctl create marshalled a types.TunnelSpec into a handler decoding
@@ -332,7 +515,14 @@ a field validated as seconds with max=300. Every create failed.
 
 Adds a contract test that decodes the CLI's body into the real server
 type and runs the server's own validator, so a renamed key and a wrong
-encoding both fail in CI rather than in production."
+encoding both fail in CI rather than in production.
+
+Also makes remoteHost/remotePort conditional on tunnel type. They were
+required for every type, so a dynamic SOCKS5 tunnel could never be
+created despite create.go documenting exactly that — and it could be
+restored from a backup, since internal/backup/validate.go already
+treated the destination as optional for dynamic. And --remote-host is
+now actually transmitted for remote tunnels instead of discarded."
 ```
 
 ---
@@ -355,48 +545,11 @@ encoding both fail in CI rather than in production."
 Append to `internal/cli/create_contract_test.go`:
 
 ```go
-// withCreateFlags sets the package-level create flags for one test and
-// restores them afterwards, so tests in this package cannot leak state into
-// each other. Capture happens before assignment — see callExport in
-// export_test.go for the same pattern.
-func withCreateFlags(t *testing.T, bindAddress string) {
-	t.Helper()
-
-	prevName := tunnelName
-	prevType := tunnelType
-	prevLocalPort := localPort
-	prevRemoteHost := remoteHost
-	prevHops := hops
-	prevUser := sshUser
-	prevKey := sshKey
-	prevKeepAlive := keepAlive
-	prevMaxRetries := maxRetries
-	prevBind := localBindAddress
-
-	t.Cleanup(func() {
-		tunnelName = prevName
-		tunnelType = prevType
-		localPort = prevLocalPort
-		remoteHost = prevRemoteHost
-		hops = prevHops
-		sshUser = prevUser
-		sshKey = prevKey
-		keepAlive = prevKeepAlive
-		maxRetries = prevMaxRetries
-		localBindAddress = prevBind
-	})
-
-	tunnelName = "prod-db"
-	tunnelType = "local"
-	localPort = 5432
-	remoteHost = "db.internal.example.com:5432"
-	hops = []string{"bastion.example.com:22"}
-	sshUser = "deploy"
-	sshKey = "/home/deploy/.ssh/id_ed25519"
-	keepAlive = 30
-	maxRetries = 3
-	localBindAddress = bindAddress
-}
+// Extend the existing withCreateFlags helper from Task 1 so it also captures,
+// restores and sets localBindAddress. Add `prevBind := localBindAddress` to the
+// capture block, `localBindAddress = prevBind` to the cleanup closure, and
+// `localBindAddress = "127.0.0.1"` to the assignment block. Do not change its
+// signature — tests that need a different value call it and then override.
 
 func TestLocalBindAddressFlagDefaultsToLoopback(t *testing.T) {
 	f := createCmd.Flags().Lookup("local-bind-address")
@@ -409,7 +562,7 @@ func TestLocalBindAddressFlagDefaultsToLoopback(t *testing.T) {
 }
 
 func TestBuildCreateRequestCarriesBindAddress(t *testing.T) {
-	withCreateFlags(t, "127.0.0.1")
+	withCreateFlags(t)
 
 	req, err := buildCreateRequest()
 	if err != nil {
@@ -431,7 +584,8 @@ func TestBuildCreateRequestCarriesBindAddress(t *testing.T) {
 func TestBuildCreateRequestPassesExplicitAllInterfaces(t *testing.T) {
 	// The escape hatch matters as much as the safe default: an operator who
 	// genuinely wants all interfaces must be able to say so.
-	withCreateFlags(t, "0.0.0.0")
+	withCreateFlags(t)
+	localBindAddress = "0.0.0.0"
 
 	req, err := buildCreateRequest()
 	if err != nil {

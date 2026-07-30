@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoadDefaults(t *testing.T) {
@@ -43,5 +44,39 @@ auth:
 	}
 	if cfg.Auth.JWTSecret != "test-secret" {
 		t.Errorf("jwt secret not loaded")
+	}
+}
+
+func TestExampleConfigMatchesRealSchema(t *testing.T) {
+	// The example file is what operators copy. If it documents keys Load
+	// does not read, they get a server that silently ignores their config.
+	cfg, err := Load("../../config.example.yaml", nil)
+	if err != nil {
+		t.Fatalf("config.example.yaml does not load: %v", err)
+	}
+
+	if cfg.Server.Addr != ":8080" {
+		t.Errorf("Server.Addr = %q, want :8080", cfg.Server.Addr)
+	}
+	if cfg.Database.Path != "tunnels.db" {
+		t.Errorf("Database.Path = %q, want tunnels.db", cfg.Database.Path)
+	}
+	if cfg.Auth.JWTSecretEnv != "LAZYTUNNEL_JWT_SECRET" {
+		t.Errorf("Auth.JWTSecretEnv = %q, want LAZYTUNNEL_JWT_SECRET", cfg.Auth.JWTSecretEnv)
+	}
+	if cfg.Auth.TokenExpiration != 24*time.Hour {
+		t.Errorf("Auth.TokenExpiration = %v, want 24h", cfg.Auth.TokenExpiration)
+	}
+	if cfg.Logging.Level != "info" {
+		t.Errorf("Logging.Level = %q, want info", cfg.Logging.Level)
+	}
+	if cfg.Logging.Format != "console" {
+		t.Errorf("Logging.Format = %q, want console", cfg.Logging.Format)
+	}
+
+	// The example must ship the safe CORS default, not a wildcard.
+	if len(cfg.Server.CORS.AllowedOrigins) != 0 {
+		t.Errorf("Server.CORS.AllowedOrigins = %v, want empty — the example must not hand operators a wide-open default",
+			cfg.Server.CORS.AllowedOrigins)
 	}
 }

@@ -1,74 +1,57 @@
-# lazytunnel Configuration Example
-# Copy this file to config.yaml and adjust values for your environment
+# lazytunnel server configuration
+#
+# Copy to config.yaml and adjust. Every key below is read by
+# internal/config/config.go — there are no other supported keys.
+#
+# Values may also be supplied as environment variables, prefixed with
+# LAZYTUNNEL_ and with dots replaced by underscores:
+#   LAZYTUNNEL_SERVER_ADDR=":9090"
 
 server:
-  host: "0.0.0.0"
-  port: 8080
-  tls:
-    enabled: false  # Enable in production
-    cert_file: "/etc/certs/server.crt"
-    key_file: "/etc/certs/server.key"
+  # Address the API server listens on.
+  addr: ":8080"
+
+  # TLS is enabled only when BOTH of these are set.
+  tls_cert: ""
+  tls_key: ""
+
+  cors:
+    # Origins permitted to call the API from a browser.
+    #
+    # Empty (the default) denies all cross-origin access. The bundled web UI
+    # is served by this same server and is same-origin, so it needs no entry
+    # here. `npm run dev` at :5173 proxies HTTP calls (same-origin to the
+    # browser) but its WebSocket proxy forwards the browser's Origin header
+    # verbatim, so live-status push needs "http://localhost:5173" below or
+    # it will silently fail to connect. A reverse proxy that rewrites the
+    # Host header must also list the browser-facing origin here.
+    #
+    #   allowed_origins: ["http://localhost:5173"]
+    #
+    # ["*"] allows any origin. Combined with authentication disabled (the
+    # default, until a JWT secret is configured), that lets any website you
+    # visit drive this API; the server logs a warning at startup if set.
+    allowed_origins: []
 
 database:
-  host: "localhost"
-  port: 5432
-  database: "tunnelmanager"
-  user: "tunnelmanager"
-  password_env: "DB_PASSWORD"  # Read password from environment variable
-  max_connections: 20
-  ssl_mode: "disable"  # Use "require" in production
-
-kms:
-  # Key Management System configuration
-  provider: "vault"  # Options: "aws", "vault", "local" (dev only)
-
-  # For AWS KMS
-  # region: "us-east-1"
-  # key_id: "alias/tunnel-manager-key"
-
-  # For HashiCorp Vault
-  vault_addr: "http://localhost:8200"
-  vault_token_env: "VAULT_TOKEN"
-  mount_path: "secret"
-
-  # For local development only (INSECURE)
-  # local_key_dir: "/tmp/lazytunnel-keys"
+  # SQLite database file. Created on first run if absent.
+  path: "tunnels.db"
 
 auth:
-  # Authentication provider
-  provider: "none"  # Options: "none", "oidc", "basic"
+  # Authentication is DISABLED unless a JWT secret is configured, either
+  # here or via the environment variable named by jwt_secret_env.
+  jwt_secret: ""
+  jwt_secret_env: "LAZYTUNNEL_JWT_SECRET"
 
-  # For OIDC
-  # issuer: "https://auth.example.com"
-  # client_id: "tunnel-manager"
-  # client_secret_env: "OAUTH_CLIENT_SECRET"
-  # redirect_url: "http://localhost:8080/auth/callback"
+  # How long issued tokens remain valid.
+  token_expiration: "24h"
 
-tunnel:
-  # Default tunnel settings
-  default_keep_alive: "30s"
-  default_max_retries: 3
-  default_timeout: "10s"
-  max_concurrent: 1000
-
-  # Auto-reconnect settings
-  reconnect_backoff_initial: "1s"
-  reconnect_backoff_max: "60s"
-  reconnect_backoff_multiplier: 2.0
-
-metrics:
-  enabled: true
-  port: 9090
-  path: "/metrics"
+  # Reconnect tunnels marked active in the database when the server starts.
+  auto_start_tunnels: false
 
 logging:
-  level: "info"  # Options: "debug", "info", "warn", "error"
-  format: "json"  # Options: "json", "text"
-  output: "stdout"  # Options: "stdout", "file"
-  file_path: "/var/log/lazytunnel/server.log"
+  # debug, info, warn, error
+  level: "info"
 
-audit:
-  enabled: true
-  database: true  # Store audit logs in database
-  file: false     # Also write to file
-  file_path: "/var/log/lazytunnel/audit.log"
+  # console for human-readable output, json for structured logs
+  format: "console"

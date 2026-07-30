@@ -65,18 +65,22 @@ func (s *Server) handleExportConfig(w http.ResponseWriter, r *http.Request) {
 // plan without writing anything.
 func (s *Server) handleImportConfig(w http.ResponseWriter, r *http.Request) {
 	// Requiring an explicit application/json Content-Type closes off a
-	// cross-origin attack surface that the wider (pre-existing, out of scope
-	// here) CORS posture leaves open: corsMiddleware sends
-	// Access-Control-Allow-Origin: * on every route, and auth is disabled
-	// entirely unless a JWT secret is configured, so with no auth configured
-	// there is nothing else standing between an arbitrary origin and this,
-	// the most destructive route in the API. A plain HTML
+	// cross-origin attack surface: a plain HTML
 	// <form enctype="text/plain"> submits a POST with Content-Type: text/plain
 	// with no CORS preflight at all (text/plain is a CORS-simple content
 	// type), and json.Decoder.Decode happily parses the exact byte stream
-	// such a form produces. mime.ParseMediaType is used (rather than a bare
-	// string compare) so a legitimate "application/json; charset=utf-8" is
-	// still accepted.
+	// such a form produces. corsMiddleware no longer sends
+	// Access-Control-Allow-Origin: * unconditionally — it only echoes a
+	// wildcard when server.cors.allowed_origins is explicitly configured with
+	// "*" — but a CORS-simple request like this still reaches the handler and
+	// mutates state regardless of what the response header says; the browser
+	// only blocks the *response* from being read, not the request from being
+	// sent. So for a deployment that does set "*" with auth disabled (auth is
+	// disabled entirely unless a JWT secret is configured), this Content-Type
+	// check is the only thing standing between an arbitrary origin and this,
+	// the most destructive route in the API. Kept as defence-in-depth.
+	// mime.ParseMediaType is used (rather than a bare string compare) so a
+	// legitimate "application/json; charset=utf-8" is still accepted.
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
 		s.respondJSON(w, http.StatusUnsupportedMediaType, map[string]interface{}{

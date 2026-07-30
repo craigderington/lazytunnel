@@ -43,3 +43,8 @@ tests/
 tmp/
 temp/
 *.log
+
+# Local env overrides (e.g. web/.env would bake an absolute VITE_API_URL
+# into the image, breaking the containerised UI)
+.env
+.env.local

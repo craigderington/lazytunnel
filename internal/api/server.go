@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -20,19 +22,20 @@ import (
 
 // Server represents the API server
 type Server struct {
-	addr        string
-	manager     *tunnel.Manager
-	router      *mux.Router
-	server      *http.Server
-	logger      zerolog.Logger
-	ctx         context.Context
-	auth        *AuthMiddleware
-	rateLimiter *RateLimiter
-	wsManager   *WebSocketManager
-	storage     tunnel.Storage
-	agents      *agent.Registry
-	coordinator *agent.Coordinator
-	version     string
+	addr           string
+	manager        *tunnel.Manager
+	router         *mux.Router
+	server         *http.Server
+	logger         zerolog.Logger
+	ctx            context.Context
+	auth           *AuthMiddleware
+	rateLimiter    *RateLimiter
+	wsManager      *WebSocketManager
+	storage        tunnel.Storage
+	agents         *agent.Registry
+	coordinator    *agent.Coordinator
+	version        string
+	allowedOrigins []string
 }
 
 // TLSConfig holds TLS configuration
@@ -43,14 +46,15 @@ type TLSConfig struct {
 
 // Config holds server configuration
 type Config struct {
-	Addr        string
-	Logger      zerolog.Logger
-	Storage     tunnel.Storage    // Optional persistent storage
-	Auth        *AuthMiddleware   // Optional authentication middleware
-	TLS         *TLSConfig        // Optional TLS configuration
-	RateLimiter *RateLimiter      // Optional rate limiter
-	WebSocket   *WebSocketManager // Optional WebSocket manager
-	Version     string            // Build version, stamped into config exports
+	Addr           string
+	Logger         zerolog.Logger
+	Storage        tunnel.Storage    // Optional persistent storage
+	Auth           *AuthMiddleware   // Optional authentication middleware
+	TLS            *TLSConfig        // Optional TLS configuration
+	RateLimiter    *RateLimiter      // Optional rate limiter
+	WebSocket      *WebSocketManager // Optional WebSocket manager
+	Version        string            // Build version, stamped into config exports
+	AllowedOrigins []string          // CORS allowlist; empty denies all cross-origin access
 }
 
 // NewServer creates a new API server
@@ -70,11 +74,26 @@ func NewServer(ctx context.Context, config Config) *Server {
 		}
 	}
 
-	// Initialize WebSocket manager if not provided
+	// Trim whitespace and drop entries that are empty after trimming. An
+	// untrimmed entry would silently never match (net/http trims the
+	// request-side Origin header, but nothing trims the config side), and an
+	// empty entry can never match at all since corsMiddleware's and the
+	// WebSocket upgrader's `origin != ""` guards fire first — so logging it
+	// as "allowed" would be misleading. Computed once, here, so the HTTP
+	// CORS middleware and the WebSocket origin check share the exact same
+	// normalized list and cannot diverge.
+	allowedOrigins, droppedOrigins := normalizeAllowedOrigins(config.AllowedOrigins)
+
+	// Initialize WebSocket manager if not provided. A supplied manager gets the
+	// server's normalized allowlist applied over whatever it was constructed
+	// with — trusting the list it arrived with would let Config.WebSocket
+	// silently bypass Config.AllowedOrigins on a security path.
 	wsManager := config.WebSocket
 	if wsManager == nil {
-		wsManager = NewWebSocketManager()
+		wsManager = NewWebSocketManager(allowedOrigins)
 		wsManager.Start()
+	} else {
+		wsManager.SetAllowedOrigins(allowedOrigins)
 	}
 
 	// Wire up tunnel status callback to broadcast via WebSocket
@@ -94,21 +113,35 @@ func NewServer(ctx context.Context, config Config) *Server {
 	}
 
 	s := &Server{
-		addr:        config.Addr,
-		manager:     manager,
-		router:      mux.NewRouter(),
-		logger:      config.Logger,
-		ctx:         ctx,
-		auth:        config.Auth,
-		rateLimiter: config.RateLimiter,
-		wsManager:   wsManager,
-		storage:     config.Storage,
-		agents:      registry,
-		coordinator: coord,
-		version:     version,
+		addr:           config.Addr,
+		manager:        manager,
+		router:         mux.NewRouter(),
+		logger:         config.Logger,
+		ctx:            ctx,
+		auth:           config.Auth,
+		rateLimiter:    config.RateLimiter,
+		wsManager:      wsManager,
+		storage:        config.Storage,
+		agents:         registry,
+		coordinator:    coord,
+		version:        version,
+		allowedOrigins: allowedOrigins,
 	}
 
 	s.setupRoutes()
+
+	if droppedOrigins > 0 {
+		config.Logger.Warn().Int("dropped", droppedOrigins).Msg("CORS: ignoring blank entries in server.cors.allowed_origins (check for stray commas/whitespace)")
+	}
+
+	switch {
+	case len(s.allowedOrigins) == 0:
+		config.Logger.Info().Msg("CORS: cross-origin access denied (server.cors.allowed_origins is empty)")
+	case slices.Contains(s.allowedOrigins, "*"):
+		config.Logger.Warn().Strs("origins", s.allowedOrigins).Msg("CORS: wildcard origin configured — any origin may call this API; this is unsafe when authentication is disabled")
+	default:
+		config.Logger.Info().Strs("origins", s.allowedOrigins).Msg("CORS: cross-origin access allowed")
+	}
 
 	s.server = &http.Server{
 		Addr:         s.addr,
@@ -251,20 +284,73 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// corsMiddleware adds CORS headers
+// corsMiddleware applies the configured CORS allowlist.
+//
+// A request with no Origin header is not cross-origin, so it gets no CORS
+// headers at all. An origin that is not allowed gets no
+// Access-Control-Allow-Origin, which is what makes the browser block it —
+// the server still answers, the browser enforces.
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if origin := r.Header.Get("Origin"); origin != "" {
+			if allowed, exact := originAllowed(s.allowedOrigins, origin); allowed {
+				if exact {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					// Without this a shared cache can serve one origin's
+					// response to another.
+					w.Header().Add("Vary", "Origin")
+				} else {
+					w.Header().Set("Access-Control-Allow-Origin", "*")
+				}
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			}
+		}
 
-		if r.Method == "OPTIONS" {
+		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// originAllowed reports whether origin may access the API, and whether the
+// match was exact rather than via a wildcard entry. It is shared by the HTTP
+// CORS middleware and the WebSocket origin check, since WebSocket upgrades
+// are not subject to CORS and need the same allowlist applied explicitly.
+//
+// A wildcard anywhere in the list wins over any specific entry, so a list
+// containing "*" is never silently narrowed. Matching is exact and
+// case-sensitive: no subdomain patterns, which is where CORS implementations
+// usually acquire their bypasses.
+func originAllowed(allowed []string, origin string) (allowedOK, exact bool) {
+	for _, o := range allowed {
+		if o == "*" {
+			return true, false
+		}
+	}
+	for _, o := range allowed {
+		if o == origin {
+			return true, true
+		}
+	}
+	return false, false
+}
+
+// normalizeAllowedOrigins trims each entry of the configured CORS allowlist
+// and drops any that are empty after trimming, returning the cleaned list
+// and how many entries were dropped.
+func normalizeAllowedOrigins(origins []string) (cleaned []string, dropped int) {
+	for _, o := range origins {
+		if trimmed := strings.TrimSpace(o); trimmed != "" {
+			cleaned = append(cleaned, trimmed)
+		} else {
+			dropped++
+		}
+	}
+	return cleaned, dropped
 }
 
 // responseWriter wraps http.ResponseWriter to capture status code

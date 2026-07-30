@@ -543,6 +543,8 @@ func TestFormatValidationError(t *testing.T) {
 		expected string
 	}{
 		{"required", "", "Field is required"},
+		{"required_unless", "Type dynamic", "Field is required"},
+		{"required_if", "Type local", "Field is required"},
 		{"min", "1", "Field cannot be empty"},
 		{"min", "5", "Field must be at least 5"},
 		{"max", "100", "Field must be at most 100"},
@@ -782,4 +784,126 @@ func TestEdgeCases(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTypeConditionalDestinationValidation pins which tunnel types require a
+// destination at the API boundary. Only `local` has a remote destination host;
+// remote forwarding binds a port on the far side and forwards to localhost
+// (internal/tunnel/forward.go's NewRemoteForwarder reads only RemotePort and
+// LocalPort, never RemoteHost), and dynamic is a SOCKS5 proxy with no fixed
+// destination. Until this was relaxed, `required_unless=Type dynamic` rejected
+// every documented `--type remote` invocation for a value nothing then read.
+//
+// The guard lived only in internal/cli before; this is internal/api behaviour,
+// so it belongs here too.
+func TestTypeConditionalDestinationValidation(t *testing.T) {
+	base := func(tunnelType string) CreateTunnelRequest {
+		return CreateTunnelRequest{
+			Name: "dest-matrix",
+			Type: tunnelType,
+			Hops: []HopReq{{Host: "bastion.example.com", Port: 22, User: "deploy", AuthMethod: "key"}},
+		}
+	}
+
+	tests := []struct {
+		name       string
+		req        CreateTunnelRequest
+		wantFields []string // empty means the request must be accepted
+	}{
+		{
+			name: "local without remoteHost is rejected",
+			req: func() CreateTunnelRequest {
+				r := base("local")
+				r.LocalPort = 5432
+				r.RemotePort = 5432
+				return r
+			}(),
+			wantFields: []string{"RemoteHost"},
+		},
+		{
+			name: "remote without remoteHost but with remotePort is accepted",
+			req: func() CreateTunnelRequest {
+				r := base("remote")
+				r.LocalPort = 8080
+				r.RemotePort = 9090
+				return r
+			}(),
+		},
+		{
+			name: "remote without remotePort is rejected",
+			req: func() CreateTunnelRequest {
+				r := base("remote")
+				r.LocalPort = 8080
+				return r
+			}(),
+			wantFields: []string{"RemotePort"},
+		},
+		{
+			name: "dynamic with neither remoteHost nor remotePort is accepted",
+			req: func() CreateTunnelRequest {
+				r := base("dynamic")
+				r.LocalPort = 1080
+				return r
+			}(),
+		},
+		{
+			name: "remote with a present but malformed remoteHost is still rejected",
+			req: func() CreateTunnelRequest {
+				r := base("remote")
+				r.LocalPort = 8080
+				r.RemotePort = 9090
+				r.RemoteHost = "not a valid hostname!"
+				return r
+			}(),
+			wantFields: []string{"RemoteHost"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errors := ValidateRequest(tt.req)
+
+			if len(tt.wantFields) == 0 {
+				if len(errors) > 0 {
+					t.Fatalf("ValidateRequest() = %v, want no errors", errors)
+				}
+				return
+			}
+
+			got := make(map[string]bool, len(errors))
+			for _, e := range errors {
+				got[e.Field] = true
+			}
+			for _, field := range tt.wantFields {
+				if !got[field] {
+					t.Errorf("want a validation error for %s, got %v", field, errors)
+				}
+			}
+		})
+	}
+}
+
+// TestMissingRemoteHostMessageIsUserFacing pins the formatted message for the
+// tag that now drives RemoteHost. A tag with no case in formatValidationError
+// falls through to the developer-facing default branch and produces
+// "RemoteHost failed validation: required_if".
+func TestMissingRemoteHostMessageIsUserFacing(t *testing.T) {
+	errors := ValidateRequest(CreateTunnelRequest{
+		Name:       "msg-check",
+		Type:       "local",
+		Hops:       []HopReq{{Host: "bastion.example.com", Port: 22, User: "deploy", AuthMethod: "key"}},
+		LocalPort:  5432,
+		RemotePort: 5432,
+	})
+
+	for _, e := range errors {
+		if e.Field != "RemoteHost" {
+			continue
+		}
+		if e.Message != "RemoteHost is required" {
+			t.Fatalf("message = %q, want %q", e.Message, "RemoteHost is required")
+		}
+		return
+	}
+	t.Fatalf("no RemoteHost error at all: %v", errors)
 }

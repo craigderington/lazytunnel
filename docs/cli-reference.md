@@ -52,6 +52,7 @@ tunnelctl create [flags]
 --name string          tunnel name (required)
 --type string          tunnel type: local, remote, or dynamic (default: local)
 --local-port int       local port to bind
+--local-bind-address   local address to bind (default: 127.0.0.1)
 --remote-host string   remote host:port (for local tunnels)
 --remote-port int      remote port (for remote tunnels)
 --hop stringArray      SSH hop in format host:port (can specify multiple)
@@ -61,6 +62,8 @@ tunnelctl create [flags]
 --keep-alive int       SSH keep-alive interval in seconds (default: 30)
 --max-retries int      maximum reconnection attempts (default: 3)
 ```
+
+The `--local-bind-address` flag controls which local address the tunnel listens on. Defaults to `127.0.0.1` for loopback-only access (safer); pass `0.0.0.0` to listen on all interfaces when you genuinely need that.
 
 **Examples:**
 

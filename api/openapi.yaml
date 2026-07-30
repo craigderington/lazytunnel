@@ -580,7 +580,9 @@ components:
 
     CreateTunnelRequest:
       type: object
-      required: [name, type, hops, remoteHost, remotePort]
+      # remoteHost and remotePort are conditionally required, which OpenAPI's
+      # flat `required` list cannot express — see their descriptions below.
+      required: [name, type, hops]
       properties:
         name:
           type: string
@@ -603,10 +605,18 @@ components:
           type: string
         remoteHost:
           type: string
+          description: >-
+            Destination host. Required for type=local, which is the only type
+            with a fixed destination host; ignored for type=remote (which
+            forwards to localhost on the near side) and type=dynamic (SOCKS5,
+            no fixed destination).
         remotePort:
           type: integer
           minimum: 1
           maximum: 65535
+          description: >-
+            Required for type=local (destination port) and type=remote (the
+            port bound on the far side); not required for type=dynamic.
         autoReconnect:
           type: boolean
         keepAlive:
