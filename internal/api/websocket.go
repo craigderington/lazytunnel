@@ -13,14 +13,15 @@ import (
 
 // WebSocketManager manages WebSocket connections and broadcasts updates
 type WebSocketManager struct {
-	clients    map[*WebSocketClient]bool
-	broadcast  chan WebSocketMessage
-	register   chan *WebSocketClient
-	unregister chan *WebSocketClient
-	mu         sync.RWMutex
-	upgrader   websocket.Upgrader
-	ctx        context.Context
-	cancel     context.CancelFunc
+	clients        map[*WebSocketClient]bool
+	broadcast      chan WebSocketMessage
+	register       chan *WebSocketClient
+	unregister     chan *WebSocketClient
+	mu             sync.RWMutex
+	upgrader       websocket.Upgrader
+	ctx            context.Context
+	cancel         context.CancelFunc
+	allowedOrigins []string
 }
 
 // WebSocketClient represents a single WebSocket connection
@@ -38,27 +39,45 @@ type WebSocketMessage struct {
 	Time    time.Time   `json:"time"`
 }
 
-// NewWebSocketManager creates a new WebSocket manager
-func NewWebSocketManager() *WebSocketManager {
+// NewWebSocketManager creates a new WebSocket manager. allowedOrigins is the
+// same CORS allowlist the HTTP middleware uses (see (*Server).corsMiddleware
+// and originAllowed) — WebSocket upgrades are not subject to CORS, so
+// gorilla/websocket's CheckOrigin hook is the only place that allowlist can
+// be enforced for browser-originated connections.
+func NewWebSocketManager(allowedOrigins []string) *WebSocketManager {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &WebSocketManager{
-		clients:    make(map[*WebSocketClient]bool),
-		broadcast:  make(chan WebSocketMessage, 256),
-		register:   make(chan *WebSocketClient),
-		unregister: make(chan *WebSocketClient),
-		upgrader: websocket.Upgrader{
-			ReadBufferSize:  1024,
-			WriteBufferSize: 1024,
-			CheckOrigin: func(r *http.Request) bool {
-				// Allow all origins in development
-				// In production, this should be restricted
-				return true
-			},
-		},
-		ctx:    ctx,
-		cancel: cancel,
+	wsm := &WebSocketManager{
+		clients:        make(map[*WebSocketClient]bool),
+		broadcast:      make(chan WebSocketMessage, 256),
+		register:       make(chan *WebSocketClient),
+		unregister:     make(chan *WebSocketClient),
+		ctx:            ctx,
+		cancel:         cancel,
+		allowedOrigins: allowedOrigins,
 	}
+
+	wsm.upgrader = websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin:     wsm.checkOrigin,
+	}
+
+	return wsm
+}
+
+// checkOrigin applies the allowlist shared with the HTTP CORS middleware. A
+// handshake with no Origin header is not from a browser — browsers always
+// send Origin on a WebSocket handshake, but a non-browser client (a Go
+// websocket client, a CLI) does not, and rejecting those would break
+// legitimate use without weakening the browser-facing protection.
+func (wsm *WebSocketManager) checkOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	allowed, _ := originAllowed(wsm.allowedOrigins, origin)
+	return allowed
 }
 
 // Start begins the WebSocket manager event loop

@@ -40,7 +40,12 @@ fi
 
 export PATH="${NODE_BIN}:${PATH}"
 export NODE_ENV="${NODE_ENV:-development}"
-export VITE_API_URL="${VITE_API_URL:-http://localhost:8080/api/v1}"
+# VITE_API_URL is intentionally not set here: web/src/lib/config.ts falls
+# back to the relative path '/api/v1', which Vite's dev-server proxy
+# forwards to the backend. Setting VITE_API_URL bypasses that proxy, makes
+# the browser call the API cross-origin, and hardcodes "localhost" — which
+# resolves to the *browser's* own machine, not this host, breaking any
+# remote browser even though `--host` is passed specifically to allow them.
 
 log "starting backend (${SERVER_BIN} --addr=${SERVER_ADDR})"
 cd "$ROOT"

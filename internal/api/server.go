@@ -74,10 +74,20 @@ func NewServer(ctx context.Context, config Config) *Server {
 		}
 	}
 
+	// Trim whitespace and drop entries that are empty after trimming. An
+	// untrimmed entry would silently never match (net/http trims the
+	// request-side Origin header, but nothing trims the config side), and an
+	// empty entry can never match at all since corsMiddleware's and the
+	// WebSocket upgrader's `origin != ""` guards fire first — so logging it
+	// as "allowed" would be misleading. Computed once, here, so the HTTP
+	// CORS middleware and the WebSocket origin check share the exact same
+	// normalized list and cannot diverge.
+	allowedOrigins, droppedOrigins := normalizeAllowedOrigins(config.AllowedOrigins)
+
 	// Initialize WebSocket manager if not provided
 	wsManager := config.WebSocket
 	if wsManager == nil {
-		wsManager = NewWebSocketManager()
+		wsManager = NewWebSocketManager(allowedOrigins)
 		wsManager.Start()
 	}
 
@@ -95,22 +105,6 @@ func NewServer(ctx context.Context, config Config) *Server {
 	version := config.Version
 	if version == "" {
 		version = "dev"
-	}
-
-	// Trim whitespace and drop entries that are empty after trimming. An
-	// untrimmed entry would silently never match (net/http trims the
-	// request-side Origin header, but nothing trims the config side), and an
-	// empty entry can never match at all since corsMiddleware's
-	// `origin != ""` guard fires first — so logging it as "allowed" would be
-	// misleading.
-	var allowedOrigins []string
-	droppedOrigins := 0
-	for _, o := range config.AllowedOrigins {
-		if trimmed := strings.TrimSpace(o); trimmed != "" {
-			allowedOrigins = append(allowedOrigins, trimmed)
-		} else {
-			droppedOrigins++
-		}
 	}
 
 	s := &Server{
@@ -294,7 +288,7 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if origin := r.Header.Get("Origin"); origin != "" {
-			if allowed, exact := s.originAllowed(origin); allowed {
+			if allowed, exact := originAllowed(s.allowedOrigins, origin); allowed {
 				if exact {
 					w.Header().Set("Access-Control-Allow-Origin", origin)
 					// Without this a shared cache can serve one origin's
@@ -318,24 +312,40 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 }
 
 // originAllowed reports whether origin may access the API, and whether the
-// match was exact rather than via a wildcard entry.
+// match was exact rather than via a wildcard entry. It is shared by the HTTP
+// CORS middleware and the WebSocket origin check, since WebSocket upgrades
+// are not subject to CORS and need the same allowlist applied explicitly.
 //
 // A wildcard anywhere in the list wins over any specific entry, so a list
 // containing "*" is never silently narrowed. Matching is exact and
 // case-sensitive: no subdomain patterns, which is where CORS implementations
 // usually acquire their bypasses.
-func (s *Server) originAllowed(origin string) (allowed, exact bool) {
-	for _, o := range s.allowedOrigins {
+func originAllowed(allowed []string, origin string) (allowedOK, exact bool) {
+	for _, o := range allowed {
 		if o == "*" {
 			return true, false
 		}
 	}
-	for _, o := range s.allowedOrigins {
+	for _, o := range allowed {
 		if o == origin {
 			return true, true
 		}
 	}
 	return false, false
+}
+
+// normalizeAllowedOrigins trims each entry of the configured CORS allowlist
+// and drops any that are empty after trimming, returning the cleaned list
+// and how many entries were dropped.
+func normalizeAllowedOrigins(origins []string) (cleaned []string, dropped int) {
+	for _, o := range origins {
+		if trimmed := strings.TrimSpace(o); trimmed != "" {
+			cleaned = append(cleaned, trimmed)
+		} else {
+			dropped++
+		}
+	}
+	return cleaned, dropped
 }
 
 // responseWriter wraps http.ResponseWriter to capture status code
