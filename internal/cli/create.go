@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -29,6 +28,35 @@ var (
 	keepAlive     int
 	maxRetries    int
 )
+
+// createTunnelRequest mirrors the wire format of api.CreateTunnelRequest.
+//
+// It exists because types.TunnelSpec disagrees with the API in two ways: its
+// top-level JSON tags are snake_case where the API expects camelCase, and its
+// KeepAlive is a time.Duration that marshals to nanoseconds where the API
+// expects whole seconds (validated max=300). Marshalling the spec directly
+// produced a body the server silently decoded into zero values and then
+// rejected as invalid.
+//
+// This mirrors the existing pattern in this package — list.go declares
+// tunnelListItem, import.go declares importReport — of restating server shapes
+// rather than importing them. create_contract_test.go pins this struct against
+// the real api.CreateTunnelRequest so the two cannot drift apart again.
+//
+// Hops are sent as []types.Hop deliberately: types.Hop and api.HopReq already
+// agree on their snake_case tags, and the extra fields types.Hop carries are
+// ignored by the server's decoder.
+type createTunnelRequest struct {
+	Name          string      `json:"name"`
+	Type          string      `json:"type"`
+	Hops          []types.Hop `json:"hops"`
+	LocalPort     int         `json:"localPort"`
+	RemoteHost    string      `json:"remoteHost,omitempty"`
+	RemotePort    int         `json:"remotePort,omitempty"`
+	AutoReconnect bool        `json:"autoReconnect"`
+	KeepAlive     int         `json:"keepAlive"`
+	MaxRetries    int         `json:"maxRetries"`
+}
 
 var createCmd = &cobra.Command{
 	Use:   "create",
@@ -74,94 +102,85 @@ func init() {
 	createCmd.MarkFlagRequired("hop")
 }
 
-func runCreate(cmd *cobra.Command, args []string) error {
-	// Parse tunnel type
-	var ttype types.TunnelType
-	switch strings.ToLower(tunnelType) {
-	case "local":
-		ttype = types.TunnelTypeLocal
-		if remoteHost == "" {
-			return fmt.Errorf("--remote-host is required for local tunnels")
-		}
-	case "remote":
-		ttype = types.TunnelTypeRemote
-		if remotePort == 0 {
-			return fmt.Errorf("--remote-port is required for remote tunnels")
-		}
-		if localPort == 0 {
-			return fmt.Errorf("--local-port is required for remote tunnels")
-		}
-	case "dynamic":
-		ttype = types.TunnelTypeDynamic
-	default:
-		return fmt.Errorf("invalid tunnel type: %s (must be local, remote, or dynamic)", tunnelType)
-	}
+// buildCreateRequest turns the parsed flags into the request body the API
+// expects. It performs no I/O so it can be tested directly.
+func buildCreateRequest() (createTunnelRequest, error) {
+	ttype := types.TunnelType(tunnelType)
 
 	// Parse hops
-	hopList := make([]types.Hop, len(hops))
-	for i, h := range hops {
+	hopList := make([]types.Hop, 0, len(hops))
+	for _, h := range hops {
 		parts := strings.Split(h, ":")
 		if len(parts) != 2 {
-			return fmt.Errorf("invalid hop format: %s (expected host:port)", h)
+			return createTunnelRequest{}, fmt.Errorf("invalid hop format: %s (expected host:port)", h)
 		}
-
 		var port int
 		if _, err := fmt.Sscanf(parts[1], "%d", &port); err != nil {
-			return fmt.Errorf("invalid port in hop: %s", h)
+			return createTunnelRequest{}, fmt.Errorf("invalid port in hop: %s", h)
 		}
 
-		authMethod := types.AuthMethodKey
-		keyID := sshKey
-		if keyID == "" {
-			keyID = os.ExpandEnv("$HOME/.ssh/id_rsa")
+		authMethod := types.AuthMethodAgent
+		keyID := ""
+		if sshKey != "" {
+			authMethod = types.AuthMethodKey
+			keyID = sshKey
 		}
 
-		hopList[i] = types.Hop{
+		hopList = append(hopList, types.Hop{
 			Host:       parts[0],
 			Port:       port,
 			User:       sshUser,
 			AuthMethod: authMethod,
 			KeyID:      keyID,
-		}
+		})
 	}
 
-	// Parse remote host/port for local tunnels
+	// Destination, which differs per tunnel type:
+	//   local   — --remote-host carries a combined host:port
+	//   remote  — --remote-host is a bare host, --remote-port the port
+	//   dynamic — a SOCKS5 proxy has no fixed destination, so both stay empty
 	var remHost string
 	var remPort int
-	if ttype == types.TunnelTypeLocal {
+	switch ttype {
+	case types.TunnelTypeLocal:
 		parts := strings.Split(remoteHost, ":")
-		if len(parts) == 2 {
-			remHost = parts[0]
-			if _, err := fmt.Sscanf(parts[1], "%d", &remPort); err != nil {
-				return fmt.Errorf("invalid port in remote host: %s", remoteHost)
-			}
-		} else {
-			return fmt.Errorf("invalid remote host format: %s (expected host:port)", remoteHost)
+		if len(parts) != 2 {
+			return createTunnelRequest{}, fmt.Errorf("invalid remote host format: %s (expected host:port)", remoteHost)
 		}
-	} else {
+		remHost = parts[0]
+		if _, err := fmt.Sscanf(parts[1], "%d", &remPort); err != nil {
+			return createTunnelRequest{}, fmt.Errorf("invalid port in remote host: %s", remoteHost)
+		}
+	case types.TunnelTypeRemote:
+		remHost = remoteHost
 		remPort = remotePort
 	}
 
-	// Create tunnel spec
-	spec := types.TunnelSpec{
+	return createTunnelRequest{
 		Name:          tunnelName,
-		Type:          ttype,
+		Type:          string(ttype),
+		Hops:          hopList,
 		LocalPort:     localPort,
 		RemoteHost:    remHost,
 		RemotePort:    remPort,
-		Hops:          hopList,
 		AutoReconnect: autoReconnect,
-		KeepAlive:     time.Duration(keepAlive) * time.Second,
+		KeepAlive:     keepAlive,
 		MaxRetries:    maxRetries,
+	}, nil
+}
+
+func runCreate(cmd *cobra.Command, args []string) error {
+	req, err := buildCreateRequest()
+	if err != nil {
+		return err
 	}
 
-	// Make API request
 	serverURL := viper.GetString("server")
 	url := fmt.Sprintf("%s/api/v1/tunnels", serverURL)
 
-	jsonData, err := json.Marshal(spec)
+	jsonData, err := json.Marshal(req)
 	if err != nil {
-		return fmt.Errorf("failed to marshal tunnel spec: %w", err)
+		return fmt.Errorf("failed to marshal tunnel request: %w", err)
 	}
 
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
@@ -187,6 +206,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  Name: %s\n", tunnelName)
 	fmt.Printf("  Type: %s\n", tunnelType)
 
+	ttype := types.TunnelType(tunnelType)
 	if ttype == types.TunnelTypeLocal {
 		fmt.Printf("  Listening: localhost:%d → %s\n", localPort, remoteHost)
 	} else if ttype == types.TunnelTypeRemote {

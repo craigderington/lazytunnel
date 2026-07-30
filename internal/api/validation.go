@@ -51,8 +51,8 @@ type CreateTunnelRequest struct {
 	Hops             []HopReq `json:"hops" validate:"required,min=1,dive"`
 	LocalPort        int      `json:"localPort" validate:"min=0,max=65535"`
 	LocalBindAddress string   `json:"localBindAddress" validate:"omitempty,ip_addr|hostname"`
-	RemoteHost       string   `json:"remoteHost" validate:"required,hostname|ip_addr"`
-	RemotePort       int      `json:"remotePort" validate:"required,min=1,max=65535"`
+	RemoteHost       string   `json:"remoteHost" validate:"required_unless=Type dynamic,omitempty,hostname|ip_addr"`
+	RemotePort       int      `json:"remotePort" validate:"required_unless=Type dynamic,omitempty,min=1,max=65535"`
 	AutoReconnect    bool     `json:"autoReconnect"`
 	KeepAlive        int      `json:"keepAlive" validate:"min=0,max=300"`
 	MaxRetries       int      `json:"maxRetries" validate:"min=0,max=100"`
