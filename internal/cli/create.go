@@ -105,7 +105,27 @@ func init() {
 // buildCreateRequest turns the parsed flags into the request body the API
 // expects. It performs no I/O so it can be tested directly.
 func buildCreateRequest() (createTunnelRequest, error) {
-	ttype := types.TunnelType(tunnelType)
+	// Parse tunnel type
+	var ttype types.TunnelType
+	switch strings.ToLower(tunnelType) {
+	case "local":
+		ttype = types.TunnelTypeLocal
+		if remoteHost == "" {
+			return createTunnelRequest{}, fmt.Errorf("--remote-host is required for local tunnels")
+		}
+	case "remote":
+		ttype = types.TunnelTypeRemote
+		if remotePort == 0 {
+			return createTunnelRequest{}, fmt.Errorf("--remote-port is required for remote tunnels")
+		}
+		if localPort == 0 {
+			return createTunnelRequest{}, fmt.Errorf("--local-port is required for remote tunnels")
+		}
+	case "dynamic":
+		ttype = types.TunnelTypeDynamic
+	default:
+		return createTunnelRequest{}, fmt.Errorf("invalid tunnel type: %s (must be local, remote, or dynamic)", tunnelType)
+	}
 
 	// Parse hops
 	hopList := make([]types.Hop, 0, len(hops))
@@ -119,11 +139,10 @@ func buildCreateRequest() (createTunnelRequest, error) {
 			return createTunnelRequest{}, fmt.Errorf("invalid port in hop: %s", h)
 		}
 
-		authMethod := types.AuthMethodAgent
-		keyID := ""
-		if sshKey != "" {
-			authMethod = types.AuthMethodKey
-			keyID = sshKey
+		authMethod := types.AuthMethodKey
+		keyID := sshKey
+		if keyID == "" {
+			keyID = os.ExpandEnv("$HOME/.ssh/id_rsa")
 		}
 
 		hopList = append(hopList, types.Hop{
@@ -204,14 +223,14 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	fmt.Printf("✓ Tunnel created successfully\n")
 	fmt.Printf("  ID: %s\n", result["id"])
 	fmt.Printf("  Name: %s\n", tunnelName)
-	fmt.Printf("  Type: %s\n", tunnelType)
+	fmt.Printf("  Type: %s\n", req.Type)
 
-	ttype := types.TunnelType(tunnelType)
-	if ttype == types.TunnelTypeLocal {
+	switch types.TunnelType(req.Type) {
+	case types.TunnelTypeLocal:
 		fmt.Printf("  Listening: localhost:%d → %s\n", localPort, remoteHost)
-	} else if ttype == types.TunnelTypeRemote {
+	case types.TunnelTypeRemote:
 		fmt.Printf("  Listening: remote:%d → localhost:%d\n", remotePort, localPort)
-	} else if ttype == types.TunnelTypeDynamic {
+	case types.TunnelTypeDynamic:
 		fmt.Printf("  SOCKS5 Proxy: localhost:%d\n", localPort)
 	}
 

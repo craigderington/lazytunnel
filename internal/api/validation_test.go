@@ -543,6 +543,7 @@ func TestFormatValidationError(t *testing.T) {
 		expected string
 	}{
 		{"required", "", "Field is required"},
+		{"required_unless", "Type dynamic", "Field is required"},
 		{"min", "1", "Field cannot be empty"},
 		{"min", "5", "Field must be at least 5"},
 		{"max", "100", "Field must be at most 100"},

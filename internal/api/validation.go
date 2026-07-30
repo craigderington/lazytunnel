@@ -100,6 +100,8 @@ func formatValidationError(e validator.FieldError) string {
 	switch tag {
 	case "required":
 		return fmt.Sprintf("%s is required", field)
+	case "required_unless":
+		return fmt.Sprintf("%s is required", field)
 	case "min":
 		if param == "1" {
 			return fmt.Sprintf("%s cannot be empty", field)

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -268,5 +269,155 @@ func TestCreateRequestOmitsFieldsTheCLICannotSet(t *testing.T) {
 	}
 	if _, present := raw["agentId"]; present {
 		t.Error("request must not carry agentId; the CLI has no flag for it")
+	}
+}
+
+// TestBuildCreateRequestValidatesTunnelType pins the per-type validation
+// switch that the original runCreate opened with (git show
+// 0206f33:internal/cli/create.go, lines 79-97). Task 1's brief said "the
+// parsing logic moves verbatim" but its code sample omitted this switch,
+// which meant a `remote` tunnel with no `--local-port` silently built a
+// request instead of failing fast — the request would have been accepted by
+// the server and only failed asynchronously once the agent tried to forward,
+// per internal/tunnel/forward.go:327. These guards must live in
+// buildCreateRequest so a false success is impossible again.
+func TestBuildCreateRequestValidatesTunnelType(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func()
+		wantErr   string // substring expected in the error
+	}{
+		{
+			name: "remote without --local-port errors",
+			configure: func() {
+				tunnelType = "remote"
+				localPort = 0
+				remotePort = 9090
+			},
+			wantErr: "--local-port is required for remote tunnels",
+		},
+		{
+			name: "remote without --remote-port errors",
+			configure: func() {
+				tunnelType = "remote"
+				localPort = 8080
+				remotePort = 0
+			},
+			wantErr: "--remote-port is required for remote tunnels",
+		},
+		{
+			name: "local without --remote-host errors",
+			configure: func() {
+				tunnelType = "local"
+				remoteHost = ""
+			},
+			wantErr: "--remote-host is required for local tunnels",
+		},
+		{
+			name: "unrecognized type errors with the friendly message",
+			configure: func() {
+				tunnelType = "BOGUS"
+			},
+			wantErr: "invalid tunnel type: BOGUS (must be local, remote, or dynamic)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withCreateFlags(t)
+			tt.configure()
+
+			_, err := buildCreateRequest()
+			if err == nil {
+				t.Fatalf("buildCreateRequest returned no error, want one containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("got error %q, want it to contain %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestBuildCreateRequestAcceptsUppercaseType pins strings.ToLower(tunnelType)
+// in the restored switch: --type LOCAL (or any other casing) must still work.
+func TestBuildCreateRequestAcceptsUppercaseType(t *testing.T) {
+	withCreateFlags(t)
+	tunnelType = "LOCAL"
+
+	req, err := buildCreateRequest()
+	if err != nil {
+		t.Fatalf("buildCreateRequest returned error for --type LOCAL: %v", err)
+	}
+	if req.Type != "local" {
+		t.Errorf("got Type %q, want the lowercased canonical value %q", req.Type, "local")
+	}
+}
+
+// TestBuildCreateRequestDefaultsHopAuthToKey pins the SSH auth default that
+// the original runCreate used (git show 0206f33:internal/cli/create.go,
+// lines 113-117): key auth, falling back to $HOME/.ssh/id_rsa when --key is
+// not set. An earlier draft of this fix silently switched the default to
+// agent auth with an empty KeyID, which is a security-relevant behavior
+// change nobody asked for.
+func TestBuildCreateRequestDefaultsHopAuthToKey(t *testing.T) {
+	t.Run("no --key set", func(t *testing.T) {
+		withCreateFlags(t)
+		sshKey = ""
+
+		req, err := buildCreateRequest()
+		if err != nil {
+			t.Fatalf("buildCreateRequest returned error: %v", err)
+		}
+		if len(req.Hops) != 1 {
+			t.Fatalf("got %d hops, want 1", len(req.Hops))
+		}
+		hop := req.Hops[0]
+		if hop.AuthMethod != types.AuthMethodKey {
+			t.Errorf("got AuthMethod %q, want %q", hop.AuthMethod, types.AuthMethodKey)
+		}
+		if !strings.HasSuffix(hop.KeyID, "/.ssh/id_rsa") {
+			t.Errorf("got KeyID %q, want it to end in /.ssh/id_rsa", hop.KeyID)
+		}
+	})
+
+	t.Run("--key set", func(t *testing.T) {
+		withCreateFlags(t)
+		sshKey = "/home/deploy/.ssh/id_ed25519"
+
+		req, err := buildCreateRequest()
+		if err != nil {
+			t.Fatalf("buildCreateRequest returned error: %v", err)
+		}
+		if len(req.Hops) != 1 {
+			t.Fatalf("got %d hops, want 1", len(req.Hops))
+		}
+		hop := req.Hops[0]
+		if hop.AuthMethod != types.AuthMethodKey {
+			t.Errorf("got AuthMethod %q, want %q", hop.AuthMethod, types.AuthMethodKey)
+		}
+		if hop.KeyID != sshKey {
+			t.Errorf("got KeyID %q, want %q", hop.KeyID, sshKey)
+		}
+	})
+}
+
+// TestBuildCreateRequestKeepAliveIsSeconds asserts directly on the CLI's own
+// encoding, rather than on a hand-built createTunnelRequest fed into the
+// server's validator. TestCreateRequestRejectsNanosecondKeepAlive guards the
+// API's max=300 tag but never exercises buildCreateRequest itself: a reviewer
+// mutated the builder back to nanoseconds and only
+// TestRemoteTunnelDestinationIsTransmitted caught it — incidental coverage
+// under a name that doesn't mention keepalive at all. This test pins the
+// builder's encoding directly so that regression fails under its own name.
+func TestBuildCreateRequestKeepAliveIsSeconds(t *testing.T) {
+	withCreateFlags(t)
+	keepAlive = 30
+
+	req, err := buildCreateRequest()
+	if err != nil {
+		t.Fatalf("buildCreateRequest returned error: %v", err)
+	}
+	if req.KeepAlive != 30 {
+		t.Errorf("got KeepAlive %d, want 30 (whole seconds, not nanoseconds)", req.KeepAlive)
 	}
 }
