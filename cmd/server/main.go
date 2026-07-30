@@ -29,11 +29,11 @@ func main() {
 	flag.Parse()
 
 	overrides := map[string]interface{}{
-		"server.addr":      *addr,
-		"database.path":    *dbPath,
-		"auth.jwt_secret":  *jwtSecret,
-		"server.tls_cert":  *tlsCert,
-		"server.tls_key":   *tlsKey,
+		"server.addr":     *addr,
+		"database.path":   *dbPath,
+		"auth.jwt_secret": *jwtSecret,
+		"server.tls_cert": *tlsCert,
+		"server.tls_key":  *tlsKey,
 	}
 	if *debug {
 		overrides["logging.level"] = "debug"
@@ -86,12 +86,13 @@ func main() {
 	}
 
 	server := api.NewServer(ctx, api.Config{
-		Addr:    cfg.Server.Addr,
-		Logger:  log.Logger,
-		Storage: store,
-		Auth:    auth,
-		TLS:     tlsConfig,
-		Version: version,
+		Addr:           cfg.Server.Addr,
+		Logger:         log.Logger,
+		Storage:        store,
+		Auth:           auth,
+		TLS:            tlsConfig,
+		Version:        version,
+		AllowedOrigins: cfg.Server.CORS.AllowedOrigins,
 	})
 
 	go func() {

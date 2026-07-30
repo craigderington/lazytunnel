@@ -33,10 +33,10 @@ type DatabaseConfig struct {
 }
 
 type AuthConfig struct {
-	JWTSecret          string        `mapstructure:"jwt_secret"`
-	JWTSecretEnv       string        `mapstructure:"jwt_secret_env"`
-	TokenExpiration    time.Duration `mapstructure:"token_expiration"`
-	AutoStartTunnels   bool          `mapstructure:"auto_start_tunnels"`
+	JWTSecret        string        `mapstructure:"jwt_secret"`
+	JWTSecretEnv     string        `mapstructure:"jwt_secret_env"`
+	TokenExpiration  time.Duration `mapstructure:"token_expiration"`
+	AutoStartTunnels bool          `mapstructure:"auto_start_tunnels"`
 }
 
 type LoggingConfig struct {
@@ -55,7 +55,7 @@ func Load(configPath string, overrides map[string]interface{}) (*Config, error) 
 	v.SetDefault("auth.auto_start_tunnels", false)
 	v.SetDefault("logging.level", "info")
 	v.SetDefault("logging.format", "console")
-	v.SetDefault("server.cors.allowed_origins", []string{"*"})
+	v.SetDefault("server.cors.allowed_origins", []string{})
 
 	v.SetEnvPrefix("LAZYTUNNEL")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
