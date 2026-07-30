@@ -134,3 +134,28 @@ func TestCORSPreflightAllowedAndDenied(t *testing.T) {
 		t.Errorf("denied preflight: got %q, want no allow-origin header", got)
 	}
 }
+
+func TestCORSAllowlistEntriesAreTrimmed(t *testing.T) {
+	// Stray whitespace in the config (e.g. a YAML list entry typo'd with a
+	// leading/trailing space) must not silently make an entry unmatchable —
+	// net/http trims the request-side Origin header, but nothing trims the
+	// config side unless NewServer does it.
+	srv := corsTestServer(t, []string{"  https://app.example.com  "})
+	h := corsResponse(t, srv, http.MethodGet, "https://app.example.com")
+
+	if got := h.Get("Access-Control-Allow-Origin"); got != "https://app.example.com" {
+		t.Errorf("got %q, want the origin echoed — allowlist entries must be trimmed", got)
+	}
+}
+
+func TestCORSAllowlistOfOnlyBlankEntriesDeniesEverything(t *testing.T) {
+	// An entry that is empty after trimming can never match a real request
+	// (corsMiddleware's origin != "" guard fires first), so a list
+	// containing only blank entries must behave exactly like an empty list.
+	srv := corsTestServer(t, []string{""})
+	h := corsResponse(t, srv, http.MethodGet, "https://app.example.com")
+
+	if got := h.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("got %q, want none — a blank allowlist entry must not allow anything", got)
+	}
+}

@@ -189,7 +189,7 @@ server:
   tls_cert: ""            # optional; set both to enable TLS
   tls_key: ""
   cors:
-    allowed_origins: ["*"]  # default ["*"]
+    allowed_origins: []  # default []; empty denies all cross-origin browser access
 
 database:
   path: "tunnels.db"       # SQLite database file; default "tunnels.db"

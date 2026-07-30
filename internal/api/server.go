@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -95,6 +97,22 @@ func NewServer(ctx context.Context, config Config) *Server {
 		version = "dev"
 	}
 
+	// Trim whitespace and drop entries that are empty after trimming. An
+	// untrimmed entry would silently never match (net/http trims the
+	// request-side Origin header, but nothing trims the config side), and an
+	// empty entry can never match at all since corsMiddleware's
+	// `origin != ""` guard fires first — so logging it as "allowed" would be
+	// misleading.
+	var allowedOrigins []string
+	droppedOrigins := 0
+	for _, o := range config.AllowedOrigins {
+		if trimmed := strings.TrimSpace(o); trimmed != "" {
+			allowedOrigins = append(allowedOrigins, trimmed)
+		} else {
+			droppedOrigins++
+		}
+	}
+
 	s := &Server{
 		addr:           config.Addr,
 		manager:        manager,
@@ -108,14 +126,21 @@ func NewServer(ctx context.Context, config Config) *Server {
 		agents:         registry,
 		coordinator:    coord,
 		version:        version,
-		allowedOrigins: config.AllowedOrigins,
+		allowedOrigins: allowedOrigins,
 	}
 
 	s.setupRoutes()
 
-	if len(s.allowedOrigins) == 0 {
+	if droppedOrigins > 0 {
+		config.Logger.Warn().Int("dropped", droppedOrigins).Msg("CORS: ignoring blank entries in server.cors.allowed_origins (check for stray commas/whitespace)")
+	}
+
+	switch {
+	case len(s.allowedOrigins) == 0:
 		config.Logger.Info().Msg("CORS: cross-origin access denied (server.cors.allowed_origins is empty)")
-	} else {
+	case slices.Contains(s.allowedOrigins, "*"):
+		config.Logger.Warn().Strs("origins", s.allowedOrigins).Msg("CORS: wildcard origin configured — any origin may call this API; this is unsafe when authentication is disabled")
+	default:
 		config.Logger.Info().Strs("origins", s.allowedOrigins).Msg("CORS: cross-origin access allowed")
 	}
 
