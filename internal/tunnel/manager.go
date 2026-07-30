@@ -372,6 +372,17 @@ func (m *Manager) Stop(ctx context.Context, tunnelID string) error {
 		return fmt.Errorf("tunnel %s not found", tunnelID)
 	}
 
+	// Record the intent before acting on it, mirroring Start. Manager.Shutdown
+	// deliberately does NOT come through here — it calls Tunnel.Stop directly,
+	// because tearing sessions down for a process exit is not an operator
+	// asking for the tunnel to stay down.
+	if m.storage != nil {
+		if err := m.storage.UpdateDesiredStatus(ctx, tunnelID, types.DesiredStatusStopped); err != nil {
+			return fmt.Errorf("failed to update desired status in storage: %w", err)
+		}
+	}
+	tunnel.Spec.DesiredStatus = types.DesiredStatusStopped
+
 	// Stop the tunnel (closes SSH session and frees ports)
 	if err := tunnel.Stop(); err != nil {
 		return fmt.Errorf("failed to stop tunnel: %w", err)
@@ -441,6 +452,21 @@ func (m *Manager) Start(ctx context.Context, tunnelID string) error {
 	if status != nil && status.State == types.TunnelStateActive {
 		return fmt.Errorf("tunnel is already active")
 	}
+
+	// Record the intent before acting on it, so a tunnel started here is
+	// restored by RestoreDesired after a restart. Coordinator.Start persists
+	// this only on its remote-agent branch — its IsLocalAgent branch
+	// delegates straight here, as does handleStartTunnel whenever no
+	// coordinator is wired — so without this an embedded tunnel stayed
+	// desired_status=stopped and silently vanished on the next boot.
+	// Persisting first means a storage failure leaves the tunnel untouched
+	// rather than running with un-recorded intent.
+	if m.storage != nil {
+		if err := m.storage.UpdateDesiredStatus(ctx, tunnelID, types.DesiredStatusActive); err != nil {
+			return fmt.Errorf("failed to update desired status in storage: %w", err)
+		}
+	}
+	tunnel.Spec.DesiredStatus = types.DesiredStatusActive
 
 	// Update to connecting state
 	tunnel.updateStatus(types.TunnelStatePending, "")
