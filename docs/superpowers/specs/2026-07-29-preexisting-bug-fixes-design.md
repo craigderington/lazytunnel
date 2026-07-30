@@ -76,6 +76,37 @@ tags, since those already agree.
 `agentId` is deliberately omitted: `create.go` has no flag for it, so there is
 no value to send, and an always-empty field would be noise.
 
+### The destination is type-conditional
+
+Fixing the wire format alone would repair only `--type local`, because
+`CreateTunnelRequest` marked both `remoteHost` and `remotePort` `required` for
+**every** type — so a dynamic SOCKS5 tunnel could never be created through the
+API at all, even though `create.go`'s help text documents one and
+`internal/backup/validate.go` already treats the destination as optional for
+dynamic (such a tunnel could be *restored* but never *created*). The validator
+therefore has to become type-aware:
+
+- `remoteHost` is `required_if=Type local`. Only a local tunnel has a fixed
+  destination host. Remote forwarding binds a port on the far side and forwards
+  to localhost — `NewRemoteForwarder` in `internal/tunnel/forward.go` reads only
+  `RemotePort` and `LocalPort` and never touches `RemoteHost` — and dynamic is a
+  SOCKS5 proxy with no fixed destination. Requiring it for `remote` demanded a
+  value nothing then read, and rejected every documented `--type remote`
+  invocation.
+- `remotePort` is `required_unless=Type dynamic`. A remote tunnel genuinely
+  needs the port it binds.
+- Format checks stay `omitempty`, so a value that *is* supplied is still
+  validated.
+
+`formatValidationError` gains cases for both `required_if` and
+`required_unless`; without them the most common create-time mistake falls
+through to the developer-facing `default:` branch and reports
+`RemoteHost failed validation: required_if` instead of `RemoteHost is required`.
+
+`create.go` keeps its own per-type guards so an obviously wrong invocation fails
+client-side without a round trip, and transmits `remoteHost` for `local` and
+`remote` while leaving it empty for `dynamic`.
+
 ---
 
 ## Fix 1b — `tunnelctl create --local-bind-address`
@@ -189,19 +220,79 @@ they are meaningless without one.
 The server logs the effective policy once at startup, at info level, so the
 active posture is never a mystery.
 
+### The WebSocket origin check
+
+Wiring the allowlist through `corsMiddleware` alone leaves a hole: **WebSocket
+upgrades are not subject to CORS**. A browser performs the handshake without a
+preflight and without consulting `Access-Control-Allow-Origin`, so `/api/v1/ws`
+stayed readable from any origin no matter what `allowed_origins` said. With
+authentication disabled by default, any page the operator visited could open the
+socket and read the live tunnel stream. Closing it is therefore part of this fix,
+not a follow-up.
+
+gorilla/websocket's `Upgrader.CheckOrigin` is the only hook where that allowlist
+can be enforced. `(*Server).originAllowed` becomes a package-level
+`originAllowed`, shared verbatim by the HTTP middleware and `CheckOrigin`, and
+`NewWebSocketManager` takes the allowlist. `NewServer` normalizes the configured
+list once and hands the same slice to both, so the two paths cannot drift.
+
+`CheckOrigin` order matters, and getting it wrong is what made this the riskiest
+part of the change:
+
+1. **No `Origin` header** — a non-browser client (a Go websocket client, a CLI).
+   Accepted. Browsers always send one, so this does not weaken the
+   browser-facing protection.
+2. **Same origin** — `url.Parse(Origin).Host == r.Host`. Accepted *before* the
+   allowlist is consulted. This is the load-bearing case: unlike `fetch`, which
+   omits `Origin` on a same-origin GET, a browser **always** sends `Origin` on a
+   WebSocket handshake, including a same-origin one. That asymmetry is why
+   `corsMiddleware` can treat "no Origin" as "not cross-origin" and this
+   function cannot — without an explicit same-origin branch, the UI this very
+   server hands out from `web/dist` is 403'd on its own WebSocket under the
+   shipped deny-all default.
+3. **Malformed `Origin`** — denied, before the allowlist, so neither a wildcard
+   nor an entry matching the raw bytes can let it through.
+4. **Otherwise** — the shared `originAllowed` decides.
+
+**Accepted risk.** The same-origin branch trusts `r.Host`, which is
+client-supplied, so an attacker who controls DNS for a name pointing at the
+server can satisfy it (a DNS-rebinding shape, over plaintext `ws://` only). This
+is not a new hole: the identical trick already defeats the HTTP API, because a
+page at `http://evil:8080` fetching `http://evil:8080/api/...` is same-origin
+from the browser's point of view and CORS never engages at all. It is also
+verbatim gorilla/websocket's documented default behaviour. The real mitigation is
+a `Host`-header allowlist, which this codebase has nowhere — the strongest
+remaining follow-up from this work.
+
 ### Compatibility
 
-Nothing in the repository breaks:
+`tunnelctl` is not a browser; CORS does not apply, and it sends no `Origin` on a
+WebSocket handshake either. For browsers, HTTP and the WebSocket diverge:
 
-- The bundled web UI is served by the same server (`server.go` serves
-  `web/dist` from the catch-all route), so it is same-origin.
-- `npm run dev` proxies `/api` to `:8080` via `web/vite.config.ts`, so the
-  browser also sees same-origin and CORS never engages.
-- `tunnelctl` is not a browser; CORS does not apply.
+- **Bundled UI at the server's own address** — `server.go` serves `web/dist`
+  from the catch-all route, so both HTTP and the WebSocket are same-origin and
+  need no configuration.
+- **HTTP through a proxy** — a proxy that forwards `/api` to the backend makes
+  the calls same-origin from the browser's point of view, so CORS never engages
+  and nothing is needed. This is true of both `web/vite.config.ts`'s dev proxy
+  and the bundled `deployments/docker/nginx.conf`.
+- **The WebSocket through a proxy** — needs the browser-facing origin listed in
+  `server.cors.allowed_origins` whenever the proxy rewrites `Host`, because the
+  same-origin branch then cannot fire. Both shipped proxies do rewrite it:
+  `vite.config.ts` sets `changeOrigin: true` (rewriting `Host` to
+  `localhost:8080` while forwarding `Origin: http://<host>:5173` verbatim), and
+  `nginx.conf` sets `proxy_set_header Host $host`, which additionally strips the
+  port (browser at `http://localhost:3000`, server sees `Host: localhost`).
+  Without the entry the handshake is 403'd; HTTP polling still works, so the
+  symptom is the UI showing disconnected and reconnecting every few seconds
+  rather than an outage.
+- **A frontend on a genuinely different origin calling the API directly** —
+  adds its origin to `server.cors.allowed_origins`, which now actually works.
 
-The only affected configuration is a frontend hosted on a different origin
-calling the API directly. Such an operator adds their origin to
-`server.cors.allowed_origins`, which now actually works.
+Because neither shipped topology loads a config file, the allowlist is set for
+them via the `LAZYTUNNEL_SERVER_CORS_ALLOWED_ORIGINS` environment variable:
+enabled in `docker-compose.yml`, and present but commented out in the systemd
+units that run the server, since the correct origin is deployment-specific.
 
 ---
 
