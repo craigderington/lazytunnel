@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -66,16 +67,42 @@ func NewWebSocketManager(allowedOrigins []string) *WebSocketManager {
 	return wsm
 }
 
-// checkOrigin applies the allowlist shared with the HTTP CORS middleware. A
-// handshake with no Origin header is not from a browser — browsers always
-// send Origin on a WebSocket handshake, but a non-browser client (a Go
-// websocket client, a CLI) does not, and rejecting those would break
-// legitimate use without weakening the browser-facing protection.
+// checkOrigin applies the allowlist shared with the HTTP CORS middleware, plus
+// one allowance the HTTP path gets for free and this one must make explicit:
+// same origin.
+//
+// A browser ALWAYS sends Origin on a WebSocket handshake, including a
+// same-origin one — the opposite of fetch, which omits it on a same-origin
+// GET. That asymmetry is why corsMiddleware can treat "no Origin" as "not
+// cross-origin" and this function cannot: if the allowlist alone decided, the
+// UI this very server hands out from web/dist could not open its own
+// WebSocket under the shipped deny-all default. Rejecting only a genuinely
+// cross-origin handshake is also gorilla/websocket's own documented safe
+// default.
 func (wsm *WebSocketManager) checkOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
+		// Not from a browser: a non-browser client (a Go websocket client, a
+		// CLI) sends no Origin header, and rejecting those would break
+		// legitimate use without weakening the browser-facing protection.
 		return true
 	}
+
+	u, err := url.Parse(origin)
+	if err != nil {
+		// A malformed Origin is not something to be lenient about.
+		return false
+	}
+
+	// Same origin — the server is serving the very page making the request, so
+	// this must not depend on the allowlist at all. Both u.Host and r.Host
+	// carry the port when one is present, so http://localhost:5173 is not
+	// same-origin with a server on :8080; the Vite dev-proxy case still falls
+	// through to the allowlist below rather than being waved past here.
+	if u.Host == r.Host {
+		return true
+	}
+
 	allowed, _ := originAllowed(wsm.allowedOrigins, origin)
 	return allowed
 }
