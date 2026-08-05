@@ -2,6 +2,8 @@
 
 A production-grade SSH Tunnel Manager for creating, maintaining, and managing SSH port forwards across a fleet of hosts.
 
+![lazytunnel](https://raw.githubusercontent.com/craigderington/lazytunnel/refs/heads/master/screenshots/lazytunnel_tunnels.png)
+
 ## Features
 
 ### Core Functionality
